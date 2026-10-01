@@ -1,0 +1,28 @@
+[Unit]
+Description=nightops %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nightops
+Group=nightops
+WorkingDirectory=/opt/nightops
+Environment=HOME=/opt/nightops/.home
+ExecStart=/opt/nightops/venv/bin/python /opt/nightops/nightops.py run %i
+Nice=10
+TimeoutStartSec=3h
+# --- hardening ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/nightops
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077

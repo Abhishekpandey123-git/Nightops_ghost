@@ -1,0 +1,30 @@
+[Unit]
+Description=nightops web console (localhost only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nightops
+Group=nightops
+WorkingDirectory=/opt/nightops
+Environment=HOME=/opt/nightops/.home
+ExecStart=/opt/nightops/venv/bin/python /opt/nightops/nightops.py web
+Restart=on-failure
+RestartSec=5
+# --- hardening ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/nightops
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

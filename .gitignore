@@ -1,0 +1,11 @@
+.env
+venv/
+.venv/
+.home/
+__pycache__/
+*.pyc
+nightops.db*
+work/
+briefings/*.md
+briefings/*.html
+.*.lock

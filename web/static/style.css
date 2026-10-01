@@ -1,0 +1,36 @@
+:root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#c9d1d9; --dim:#8b949e;
+        --green:#3fb950; --yellow:#d29922; --red:#f85149; --blue:#58a6ff; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+a { color: var(--blue); word-break: break-all; }
+button { background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+button:hover { border-color: var(--blue); }
+button:disabled { color: var(--green); cursor: default; }
+header { display: flex; gap: 16px; align-items: center; padding: 8px 16px;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { font-weight: 700; color: var(--green); margin-right: auto; }
+#badge { color: var(--dim); } #badge.hot { color: var(--red); }
+.console { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px;
+  height: calc(100% - 50px); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  display: flex; flex-direction: column; min-height: 0; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+  margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+#feed, #out { flex: 1; overflow-y: auto; padding: 8px 12px; white-space: pre-wrap; }
+.ev-alarm { color: var(--red); } .ev-warn { color: var(--yellow); } .ev-info { color: var(--dim); }
+.acked { opacity: .5; } .echo { color: var(--green); }
+.prompt { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.prompt span { color: var(--green); }
+.prompt input { flex: 1; background: transparent; border: 0; color: var(--fg); font: inherit; outline: none; }
+.login { max-width: 340px; margin: 12vh auto; padding: 24px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; }
+.login h1 { color: var(--green); font-size: 20px; margin: 0 0 16px; }
+.login label { display: block; color: var(--dim); margin-bottom: 12px; }
+.login input { display: block; width: 100%; margin-top: 4px; padding: 6px 8px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; color: var(--fg); font: inherit; }
+.login button { width: 100%; margin-top: 8px; padding: 8px; }
+.err { color: var(--red); }
+@media (max-width: 800px) { .console { grid-template-columns: 1fr; height: auto; }
+  #feed, #out { max-height: 45vh; } }

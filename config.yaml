@@ -1,0 +1,196 @@
+# =====================================================================
+# nightops configuration
+# Rule: everything plain code can do is done without AI.
+# AI is OFF by default.
+# =====================================================================
+
+storage:
+  db_path: nightops.db
+
+# ---------------------------------------------------------------------
+# GitHub
+# ---------------------------------------------------------------------
+github:
+  token_env: GITHUB_TOKEN
+  # The ONLY repositories nightops may write to (issues, PRs, branches),
+  # and only after you approve. Everything else is read-only.
+  own_repos: []
+    # - YOUR_GITHUB_USER/your-repo
+
+# ---------------------------------------------------------------------
+# Web console (terminal-style, with live alarms)
+# ---------------------------------------------------------------------
+web:
+  host: 127.0.0.1            # keep it local; reach it via SSH tunnel or nginx HTTPS
+  port: 8800
+  cookie_secure: true        # keep true (works over HTTPS and http://localhost)
+  trust_proxy: false         # set true ONLY when behind the provided nginx config
+  allowed_origins: []        # e.g. ["https://ops.yourdomain.com"] when using nginx
+  session_idle_minutes: 30
+  session_max_hours: 12
+  max_login_failures: 5
+  lockout_minutes: 15
+  poll_seconds: 10
+
+# ---------------------------------------------------------------------
+# Jobs & internships (official public APIs only, no scraping)
+# ---------------------------------------------------------------------
+jobs:
+  enabled: true
+  looking_for: both          # internship | job | both
+  profile: >-
+    Python backend developer (FastAPI, Flask), document generation, XML,
+    deployments on Linux with nginx and systemd. Looking for internships
+    and entry-level roles.
+  role_keywords: [python, backend, back-end, fastapi, django, flask, "software engineer",
+                  "software developer", developer, sde, "full stack", fullstack, api]
+  internship_keywords: [intern, internship, trainee, apprentice, apprenticeship]
+  entry_keywords: [junior, entry, "entry-level", graduate, fresher, "new grad", "0-2 years", associate]
+  exclude_keywords: [senior, "sr.", sr, lead, principal, staff, manager, director, head,
+                     architect, "5+ years", "7+ years", "8+ years", "10+ years"]
+  # A posting must mention one of these locations, or be remote with no restriction.
+  require_location_match: true
+  locations: [india, remote, anywhere, worldwide, global, asia, apac, delhi, "new delhi",
+              noida, gurgaon, gurugram, ghaziabad, bangalore, bengaluru, hyderabad, pune,
+              mumbai, chennai]
+  preferred_locations: [india, delhi, noida, gurgaon, gurugram, ghaziabad]
+  skill_keywords: [python, fastapi, flask, django, sql, postgresql, rest, api, linux,
+                   docker, nginx, xml, pdf, git, javascript, react]
+  max_age_days: 21
+  alarm_score: 35            # new postings at/above this score raise an alarm
+  scoring:
+    skill: 8
+    entry_level: 10
+    internship: 5
+    remote: 5
+    preferred_location: 8
+    fresh_3d: 10
+    fresh_7d: 5
+  ai_fit:                    # only used if ai.enabled
+    enabled: true
+    top_n: 5
+  sources:
+    remotive:   {enabled: true, searches: [python, backend], min_interval_hours: 6}
+    arbeitnow:  {enabled: true, pages: 2, min_interval_hours: 6}
+    remoteok:   {enabled: true, min_interval_hours: 6}
+    hn:         {enabled: true, max_posts: 600, min_interval_hours: 12}
+    # Company career pages. Find the name in the careers URL:
+    #   boards.greenhouse.io/<name>  or  job-boards.greenhouse.io/<name>
+    #   jobs.lever.co/<name>
+    greenhouse: {enabled: true, boards: [], min_interval_hours: 6}
+    lever:      {enabled: true, companies: [], min_interval_hours: 6}
+
+# ---------------------------------------------------------------------
+# scout - open-source issues and projects for you (read-only)
+# ---------------------------------------------------------------------
+scout:
+  enabled: true
+  ai_triage: true              # only used if ai.enabled
+  ai_triage_top_n: 5
+  updated_within_days: 120
+  alarm_score: 50              # new issues at/above this score raise an alarm
+  searches:
+    - {language: python, issue_labels: ["good first issue"]}
+    - {language: python, issue_labels: ["help wanted"]}
+    - {language: python, issue_labels: ["good first issue", "help wanted"], keywords: [fastapi]}
+    - {language: python, issue_labels: ["good first issue", "help wanted"], keywords: [pdf]}
+  skill_keywords: [python, fastapi, flask, pdf, pymupdf, docx, document, xml, lxml,
+                   api, openapi, template, parser, cli]
+  disqualify:
+    assigned: true
+    open_linked_pr: true
+  title_blocklist: [benchmark, evaluate, evaluation, research, gsoc, "proof of concept",
+                    feasibility, investigate, spike, epic, rewrite, "16-week"]
+  claim_phrases: ["i'd like to work", "i would like to work", "i want to work on",
+                  "can i work on", "can i take", "may i take", "may i work", "i'll take",
+                  "i will take", "i'd like to take", "i would like to take",
+                  "i'd love to take", "i would love to take", "working on this",
+                  "i'm working on", "i am working on", "assign me", "assign this to me",
+                  "please assign", "can i be assigned", "picking this up", "i'll pick this",
+                  "let me take this", "dibs"]
+  health:
+    max_repo_idle_days: 90
+    check_external_prs: true
+    external_pr_sample: 30
+  scoring:
+    skill_keyword: 10
+    updated_14d: 15
+    updated_30d: 8
+    help_wanted_bonus: 5
+    has_contributing_bonus: 5
+    external_prs_bonus: 15
+    claim_penalty: -40
+    short_body_penalty: -5
+    ai_easy_bonus: 10
+    ai_hard_penalty: -30
+    ai_upstream_penalty: -30
+  projects:                    # healthy projects to contribute to (not just single issues)
+    enabled: true
+    languages: [python]
+    min_good_first_issues: 3
+    min_stars: 50
+    max_stars: 5000            # very big projects get swarmed by beginners
+    pushed_within_days: 30
+    info_score: 30
+
+# ---------------------------------------------------------------------
+# worker - maintain YOUR repos (every change needs your approval)
+# ---------------------------------------------------------------------
+worker:
+  enabled: true
+  workdir: work
+  propose_issues: true       # missing LICENSE/README, failing tests, outdated deps
+  repos: []
+    # - repo: YOUR_GITHUB_USER/your-repo
+    #   default_branch: main
+    #   setup_command: "python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt"
+    #   test_command: ".venv/bin/python -m pytest -q"
+    #   lint_command: ""
+    #   issue_label: nightops    # AI only touches issues YOU give this label
+  ai_fix:
+    mode: "off"                # "off" | builtin | command  (keep the quotes on "off")
+    max_issues_per_night: 2
+    max_files: 6
+    max_context_chars: 40000
+    max_output_tokens: 4000
+    agent_command: "claude -p --permission-mode acceptEdits"
+    agent_timeout: 1800
+
+# ---------------------------------------------------------------------
+# brief - morning report (no AI)
+# ---------------------------------------------------------------------
+briefing:
+  enabled: true
+  output_dir: briefings
+
+# ---------------------------------------------------------------------
+# AI gateway (optional): cache, daily budget, cheap/strong routing
+# ---------------------------------------------------------------------
+ai:
+  enabled: false
+  provider: openai_compatible     # Groq, OpenAI, OpenRouter, local Ollama
+  base_url: https://api.groq.com/openai/v1
+  api_key_env: AI_API_KEY
+  cheap_model: llama-3.1-8b-instant
+  strong_model: llama-3.3-70b-versatile
+  #   provider: anthropic
+  #   cheap_model: claude-haiku-4-5-20251001
+  #   strong_model: claude-sonnet-5
+  daily_token_budget: 200000
+  max_input_chars: 12000
+  cache: true
+
+# ---------------------------------------------------------------------
+# Push alarms to your phone too (optional). The web console works without this.
+# ---------------------------------------------------------------------
+notify:
+  channels: []                 # add: telegram, email
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env: TELEGRAM_CHAT_ID
+  email:
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    user_env: SMTP_USER
+    password_env: SMTP_PASSWORD
+    to: you@example.com

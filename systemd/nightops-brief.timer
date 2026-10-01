@@ -1,0 +1,10 @@
+[Unit]
+Description=nightops morning briefing 07:00 IST
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 Asia/Kolkata
+Unit=nightops@brief.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

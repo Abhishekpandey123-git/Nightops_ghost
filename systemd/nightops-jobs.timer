@@ -1,0 +1,10 @@
+[Unit]
+Description=nightops jobs every hour (each source has its own polite interval)
+
+[Timer]
+$OnBootSec=4min\nOnUnitActiveSec=1h
+Unit=nightops@jobs.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
