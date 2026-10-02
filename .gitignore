@@ -9,3 +9,4 @@ work/
 briefings/*.md
 briefings/*.html
 .*.lock
+.cache/

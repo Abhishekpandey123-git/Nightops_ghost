@@ -68,7 +68,7 @@ sudo -u nightops venv/bin/pip install -r requirements.txt
 sudo -u nightops venv/bin/python -m unittest discover -s tests
 ```
 
-The last line should end with `Ran 46 tests ... OK`.
+The last line should end with `Ran 94 tests ... OK`.
 
 > Every command from here on is run from `/opt/nightops` as the `nightops`
 > user: `cd /opt/nightops` then `sudo -u nightops venv/bin/python ...`
@@ -189,7 +189,7 @@ cd /opt/nightops
 cp systemd/nightops@.service systemd/nightops-web.service systemd/nightops-*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now nightops-web.service
-systemctl enable --now nightops-jobs.timer nightops-scout.timer nightops-worker.timer nightops-brief.timer
+systemctl enable --now nightops-jobs.timer nightops-scout.timer nightops-worker.timer nightops-brief.timer nightops-ai.timer nightops-automations.timer
 systemctl status nightops-web --no-pager
 systemctl list-timers 'nightops*'
 ```
@@ -201,6 +201,8 @@ systemctl list-timers 'nightops*'
 | scout | every 30 minutes |
 | worker | 01:30 IST |
 | brief | 07:00 IST |
+| ai (resumes paused AI tasks) | every 10 minutes |
+| automations (your own scripts) | checks every 5 minutes |
 
 Logs: `journalctl -u nightops-web -n 50` and `journalctl -u 'nightops@*' -n 50`
 
@@ -253,16 +255,73 @@ Alarms appear in the console; Telegram also sends them to your phone.
 5. In `config.yaml`: `notify: channels: [telegram]`
 6. `sudo -u nightops venv/bin/python nightops.py notify-test`
 
-### AI
+### AI (Gemini, Groq, and open-source models)
 
-1. Add `AI_API_KEY=...` to `.env` (a Groq key works as-is).
-2. In `config.yaml`: `ai: enabled: true`. The default daily budget is 200,000
-   tokens.
-3. `doctor`, then restart: `systemctl restart nightops-web`
+Everything works without AI. With it on, you get a short "how well does this
+job fit you" note on top job matches and a difficulty check on open-source
+issues. Each task can use a different AI, with backups.
 
-This turns on job-fit notes and issue difficulty checks. AI code fixes are a
-separate switch, `worker.ai_fix.mode: builtin`, and only touch issues you
-label `nightops` in your own repos. Only enable that for repos that have tests.
+**1. Get keys.** Use any or all; nightops skips providers without a key.
+
+| Provider | Where | Notes |
+|---|---|---|
+| Gemini | https://aistudio.google.com/apikey | free tier is Flash / Flash-Lite models |
+| Groq | https://console.groq.com/keys | runs open-source models (Llama, gpt-oss), fast |
+| OpenRouter | https://openrouter.ai/keys | many free open-source models through one key |
+
+Put them in `.env`:
+
+```
+GEMINI_API_KEY=...
+GROQ_API_KEY=...
+OPENROUTER_API_KEY=...
+```
+
+**2. Copy your real limits.** Free-tier limits change often and differ per
+account. Look them up (Google AI Studio → Rate limit; Groq console → Limits)
+and set the `limits:` of each provider in `config.yaml` a little *below* them,
+so nightops pauses itself before the provider refuses.
+
+**3. Turn it on.** In `config.yaml` set `ai: enabled: true`, then:
+
+```bash
+sudo -u nightops venv/bin/python nightops.py doctor
+sudo -u nightops venv/bin/python nightops.py ai-test
+systemctl restart nightops-web
+```
+
+`ai-test` sends one tiny prompt to every model in your routes. If a line says
+`failed`, that model name is probably wrong or retired: check the provider's
+model list and change it under `ai: routes:`.
+
+**How limits work:**
+- Each task (`jobs_fit`, `scout_triage`, `worker_fix`) has a list of models
+  under `routes:`, tried in order. If one is paused, the next takes over.
+- A model is paused when it reaches your local limit, or when the provider
+  replies "limit reached". A per-minute limit pauses it for the seconds the
+  provider asks; a daily quota pauses it until the provider's daily reset
+  (Gemini: midnight Pacific).
+- If every model for a task is paused, the task is saved. The `ai` timer
+  checks every 10 minutes and continues from the same task once a limit resets.
+  Nothing is lost or done twice.
+- Check anytime with `status` on the server, or `ai` in the web console.
+
+AI code fixes are a separate switch (`worker.ai_fix.mode: builtin`) and only
+touch issues you label `nightops` in your own repos. Only use them on repos
+with tests.
+
+### Your own automations
+
+Write small scripts that nightops runs on a schedule, for example watching a
+careers page for the word "intern", or a daily Telegram digest of new jobs.
+See **AUTOMATIONS.md** for the full guide; the short version:
+
+```bash
+sudo -u nightops venv/bin/python nightops.py automations new my_watcher
+nano automations/my_watcher.py           # write run(ctx)
+nano config.yaml                         # add it under automations: run:
+sudo -u nightops venv/bin/python nightops.py automations run my_watcher
+```
 
 ### Open the console from anywhere via HTTPS (instead of SSH)
 

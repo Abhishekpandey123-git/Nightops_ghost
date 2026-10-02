@@ -284,6 +284,75 @@ class WebConsole(Base):
         self.assertEqual(self.client.get("/api/events").json()["unacked_alarms"], 0)
 
 
+# ================================================================ rate limits
+class RateLimits(Base):
+    def test_secondary_limit_raises_cleanly(self):
+        from unittest import mock
+        from core.github import GitHub, RateLimited
+
+        class Resp:
+            status_code = 403
+            headers = {}
+            text = '{"message": "You have exceeded a secondary rate limit."}'
+        gh = GitHub("x")
+        gh.PACE_SECONDS = gh.SEARCH_PACE_SECONDS = 0
+        with mock.patch.object(gh.s, "request", return_value=Resp()), \
+                mock.patch("core.github.time.sleep") as slept:
+            with self.assertRaises(RateLimited):
+                gh.get_repo("a/b")
+        self.assertEqual(slept.call_count, 2)          # waited twice, then gave up
+
+    def _issue(self, n):
+        return {"html_url": f"https://github.com/a/b/issues/{n}", "number": n,
+                "title": f"Fix fastapi thing {n}", "body": "Clear description. " * 10,
+                "labels": [{"name": "good first issue"}], "updated_at": f"2026-09-{10 + n:02d}T00:00:00Z",
+                "assignee": None, "assignees": [], "repository_url": "https://api.github.com/repos/a/b"}
+
+    def _gh(self, fail_after=None):
+        from core.github import RateLimited
+        test, calls = self, {"n": 0}
+
+        class GH:
+            def search_issues(self, q, max_pages=1): return [test._issue(i) for i in range(1, 6)]
+            def get_repo(self, r): return {"archived": False, "pushed_at": now().strftime("%Y-%m-%dT%H:%M:%SZ")}
+            def issue_timeline(self, r, n):
+                calls["n"] += 1
+                if fail_after is not None and calls["n"] > fail_after:
+                    raise RateLimited("secondary rate limit")
+                return []
+            def issue_comments(self, r, n): return []
+            def recent_closed_pulls(self, r, n): return []
+            def has_contributing(self, r): return True
+            def search_repos(self, q): return []
+        return GH(), calls
+
+    def test_partial_results_kept_when_limited(self):
+        from core.ai import AI
+        gh, _ = self._gh(fail_after=2)
+        out = scout.run(CFG, self.store, gh, AI(CFG, self.store))
+        self.assertEqual(len(out), 2)                                 # kept what it had
+        self.assertEqual(self.store.one("SELECT COUNT(*) c FROM scout_issues")["c"], 2)
+
+    def test_recently_checked_issues_are_skipped(self):
+        from core.ai import AI
+        gh, calls = self._gh()
+        scout.run(CFG, self.store, gh, AI(CFG, self.store))
+        first = calls["n"]
+        scout.run(CFG, self.store, gh, AI(CFG, self.store))
+        self.assertEqual(first, 5)
+        self.assertEqual(calls["n"], 5)                               # nothing re-checked
+
+    def test_cap_per_run(self):
+        from core.ai import AI
+        c = copy.deepcopy(CFG)
+        c["scout"]["max_vet_per_run"] = 3
+        gh, calls = self._gh()
+        scout.run(c, self.store, gh, AI(c, self.store))
+        self.assertEqual(calls["n"], 3)
+        scout.run(c, self.store, gh, AI(c, self.store))
+        self.assertEqual(calls["n"], 5)                               # the rest next run
+
+
 # ============================================================ projects & repos
 class Projects(Base):
     def test_queries_and_scoring(self):
@@ -307,6 +376,68 @@ class Maintenance(Base):
         self.assertEqual(len(titles), 3)                               # deduplicated
         self.assertTrue(any("LICENSE" in t for t in titles))
         self.assertEqual(len(self.store.q("SELECT * FROM events WHERE title LIKE 'APPROVAL NEEDED%'")), 3)
+
+
+class LicenseFix(Base):
+    class GH:
+        def get_license_template(self, key):
+            return "MIT License\n\nCopyright (c) [year] [fullname]\n\nPermission is hereby granted..."
+        def get_user_name(self, login): return "Abhishek Pandey"
+
+    def test_proposes_pr_with_name_year_and_closes_issue(self):
+        # an earlier "add a LICENSE" issue was already filed as issue #1
+        aid = actions.propose(self.store, "open_issue", "me/repo", "hyg:license:me/repo",
+                              {"title": "t", "body": "b"}, "s")
+        self.store.x("UPDATE actions SET status='done', result=? WHERE id=?",
+                     ("https://github.com/me/repo/issues/1", aid))
+        data = {"hygiene": {"license": False, "readme": True, "default_branch": "main", "owner": "me"}}
+        worker.propose_maintenance(CFG, self.store, "me/repo", data, self.GH())
+        rows = actions.pending(self.store)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "add_file_pr")
+        import json
+        p = json.loads(rows[0]["payload"])
+        self.assertIn(str(now().year), p["content"])
+        self.assertIn("Abhishek Pandey", p["content"])
+        self.assertNotIn("[year]", p["content"])
+        self.assertEqual(p["path"], "LICENSE")
+        self.assertEqual(p["base"], "main")
+        self.assertIn("Closes #1", p["body"])
+
+    def test_falls_back_to_issue_without_github(self):
+        worker.propose_maintenance(CFG, self.store, "me/repo", {"hygiene": {"license": False, "readme": True}})
+        self.assertEqual(actions.pending(self.store)[0]["kind"], "open_issue")
+
+    def test_approval_runs_and_owner_check(self):
+        calls = []
+
+        class GH:
+            def add_file_pr(self, *a):
+                calls.append(a)
+                return "https://github.com/me/repo/pull/2"
+        c = copy.deepcopy(CFG); c["github"]["own_repos"] = ["me/repo"]
+        ok = actions.propose(self.store, "add_file_pr", "me/repo", "x1", {
+            "base": "main", "branch": "nightops/add-license", "path": "LICENSE", "content": "c",
+            "message": "m", "title": "t", "body": "b"}, "s")
+        self.assertIn("pull/2", actions.decide(c, self.store, GH(), ok, True))
+        bad = actions.propose(self.store, "add_file_pr", "someone/else", "x2", {
+            "base": "main", "branch": "b", "path": "LICENSE", "content": "c",
+            "message": "m", "title": "t", "body": "b"}, "s")
+        self.assertIn("Refused", actions.decide(c, self.store, GH(), bad, True))
+        self.assertEqual(len(calls), 1)
+
+    def test_client_never_overwrites(self):
+        from unittest import mock
+        from core.github import GitHub
+        gh = GitHub("x")
+        gets = {"/repos/me/repo/git/ref/heads/main": {"object": {"sha": "abc"}},
+                "/repos/me/repo/contents/LICENSE": {"name": "LICENSE"}}      # already exists
+        with mock.patch.object(gh, "_get", side_effect=lambda path, params=None: gets.get(path)), \
+                mock.patch.object(gh, "_req") as req:
+            with self.assertRaises(RuntimeError):
+                gh.add_file_pr("me/repo", "main", "nightops/add-license", "LICENSE", "c", "m", "t", "b")
+        methods = [c.args[0] for c in req.call_args_list]
+        self.assertNotIn("PUT", methods)                                    # file never written
 
 
 if __name__ == "__main__":

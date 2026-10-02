@@ -131,13 +131,55 @@ def hygiene(gh, repo: str) -> dict:
     info = gh.get_repo(repo) or {}
     return {"license": bool(info.get("license")), "description": bool(info.get("description")),
             "readme": gh.has_readme(repo), "open_issues": int(info.get("open_issues_count") or 0),
-            "open_prs": len(gh.open_pulls(repo)), "stars": int(info.get("stargazers_count") or 0)}
+            "open_prs": len(gh.open_pulls(repo)), "stars": int(info.get("stargazers_count") or 0),
+            "default_branch": info.get("default_branch") or "main",
+            "owner": (info.get("owner") or {}).get("login") or repo.split("/")[0]}
 
 
-def propose_maintenance(cfg: dict, store, repo: str, data: dict) -> None:
+def license_text(gh, cfg: dict, owner: str) -> tuple[str, str] | None:
+    """Fill GitHub's official license template with the year and your name. No AI."""
+    lc = cfg.get("worker", {}).get("license", {}) or {}
+    key = str(lc.get("type", "mit")).lower()
+    try:
+        body = gh.get_license_template(key)
+        holder = lc.get("holder") or gh.get_user_name(owner)
+    except Exception:
+        return None
+    if not body:
+        return None
+    from core.util import now
+    year = str(now().year)
+    for ph in ("[year]", "<year>", "[yyyy]"):
+        body = body.replace(ph, year)
+    for ph in ("[fullname]", "<name of author>", "[name of copyright owner]"):
+        body = body.replace(ph, holder)
+    return key.upper(), body
+
+
+def propose_maintenance(cfg: dict, store, repo: str, data: dict, gh=None) -> None:
     """Turn findings into GitHub issues - queued for approval, never auto-filed."""
     import hashlib
     h = data.get("hygiene", {})
+    fix = (cfg.get("worker", {}).get("license", {}) or {}).get("fix_with_pr", True)
+    if h and not h.get("license") and fix and gh is not None:
+        lic = license_text(gh, cfg, h.get("owner", repo.split("/")[0]))
+        if lic:
+            name, text = lic
+            done = store.one("SELECT result FROM actions WHERE dedupe=? AND status='done'",
+                             (f"hyg:license:{repo}",))
+            closes = ""
+            if done and done["result"] and "/issues/" in done["result"]:
+                closes = f"\n\nCloses #{done['result'].rstrip('/').split('/')[-1]}"
+            actions.propose(store, "add_file_pr", repo, f"fix:license:{repo}", {
+                "base": h.get("default_branch", "main"), "branch": "nightops/add-license",
+                "path": "LICENSE", "content": text, "message": f"Add {name} license",
+                "title": f"Add {name} license",
+                "body": (f"Adds a {name} license file (GitHub's official template, filled with "
+                         f"your name and the year) so others can legally use and contribute "
+                         f"to this project.\n\nOpened by nightops after your approval. "
+                         f"Review the file, then merge.{closes}")},
+                f"{repo}: add {name} LICENSE (pull request)")
+            h = dict(h, license=True)     # handled; don't also queue the issue
     if h and not h.get("license"):
         actions.propose(store, "open_issue", repo, f"hyg:license:{repo}",
                         {"title": "Add a LICENSE file", "labels": ["maintenance"],
@@ -256,7 +298,9 @@ def attempt_fix(cfg: dict, store, gh, ai, rc: dict, path: str, issue: dict) -> s
                       max_tokens=int(fix.get("max_output_tokens", 4000)),
                       purpose="worker_fix", max_chars=max_chars + 4000)
         if not text:
-            return "no AI response (budget or error)"
+            if ai.deferred:
+                return "waiting: AI limit reached, will retry next night"
+            return "no AI response (error)"
         m = re.search(r"SUMMARY:\s*(.+)", text)
         summary = m.group(1).strip()[:200] if m else ""
         diff = extract_diff(text)
@@ -329,7 +373,7 @@ def run(cfg: dict, store, gh, ai) -> list[dict]:
             emit(store, "warn", "repos", f"Tests FAILING in {repo}", f"https://github.com/{repo}",
                  f"testfail:{repo}:{now_iso()[:10]}")
         if w.get("propose_issues", True):
-            propose_maintenance(cfg, store, repo, data)
+            propose_maintenance(cfg, store, repo, data, gh)
         store.x("INSERT INTO repo_checks(repo,at,data) VALUES(?,?,?)",
                 (repo, now_iso(), json.dumps(data)))
         log("worker", f"{repo}: tests={data.get('tests', {}).get('ok')} "
@@ -340,6 +384,10 @@ def run(cfg: dict, store, gh, ai) -> list[dict]:
         mode = fix.get("mode") or "off"          # YAML may turn a bare off into False
         if mode not in ("builtin", "command"):
             results.append({"repo": repo, "checks": data})
+            continue
+        if mode == "builtin" and not ai.available("worker_fix", "strong"):
+            log("worker", f"{repo}: AI is paused (limit reached); fixes will resume next night")
+            results.append({"repo": repo, "checks": data, "attempts": 0})
             continue
         try:
             issues = gh.list_issues(repo, rc.get("issue_label", "nightops"))

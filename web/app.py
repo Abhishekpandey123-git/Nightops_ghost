@@ -34,7 +34,7 @@ from core.util import now_iso
 from modules import actions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNNABLE = ("jobs", "scout", "worker", "brief")
+RUNNABLE = ("jobs", "scout", "worker", "brief", "ai")
 
 HELP = """commands
   alarms [n]            unacknowledged alarms
@@ -48,8 +48,12 @@ HELP = """commands
   queue                 actions waiting for approval
   approve <id> <2fa>    approve an action (needs a fresh 2FA code)
   reject <id>           reject an action
-  run jobs|scout|worker|brief   start a module now
+  run jobs|scout|worker|brief|ai   start a module now
+  ai                    AI limits, pauses, and queued work
   status                counts and AI spend
+  ai                    AI providers, routes, pauses, waiting tasks
+  automations           your custom automations and their last result
+  autorun <name>        run one automation now
   audit [n]             security log
   whoami | clear | help"""
 
@@ -348,6 +352,25 @@ def create_app(cfg: dict, store, gh) -> FastAPI:
             alarms_n = q("SELECT COUNT(*) FROM events WHERE level='alarm' AND acked=0")
             return (f"internships: {interns}   jobs: {jobs_n}   oss issues: {issues_n}   "
                     f"projects: {projects_n}\npending approvals: {pending_n}   unacked alarms: {alarms_n}")
+        if cmd == "automations":
+            from modules import automations as autom
+            return "\n".join(autom.status_lines(cfg, store))
+        if cmd == "autorun":
+            from modules import automations as autom
+            if not args or args[0] not in autom.configured(cfg) or args[0] not in autom.available():
+                return "usage: autorun <name>  (must be listed under automations.run in config.yaml)"
+            subprocess.Popen([sys.executable, os.path.join(BASE, "nightops.py"), "automations", "run", args[0]],
+                             cwd=BASE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            audit(store, s["user"], ip, "automation_run", args[0])
+            return f"started {args[0]}; results appear in the feed"
+        if cmd == "ai":
+            from core.ai import AI
+            from modules import aiq
+            ai = AI(cfg, store)
+            if not ai.enabled:
+                return "AI is disabled (ai.enabled: false, or no API key in .env)"
+            return "\n".join(ai.report() + [f"tasks waiting to resume: {aiq.pending_count(store)}"])
         if cmd == "audit":
             rows = store.q("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (n,))
             return "\n".join(f"{r['at'][5:16]} {r['actor']}@{r['ip']} {r['action']} {r['detail'][:80]}"

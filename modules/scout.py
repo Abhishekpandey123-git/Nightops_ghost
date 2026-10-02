@@ -10,7 +10,10 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
+import time
+
 from core.events import emit
+from core.github import RateLimited
 from core.util import days_since, log, now, now_iso
 
 INSIDERS = {"OWNER", "MEMBER", "COLLABORATOR"}
@@ -141,70 +144,94 @@ def run(cfg: dict, store, gh, ai) -> list[Candidate]:
     contrib_cache: dict[str, bool] = {}
 
     raw: dict[str, dict] = {}
+    stopped = False
     for q in build_queries(c):
         log("scout", f"search: {q}")
-        for item in gh.search_issues(q):
-            raw[item["html_url"]] = item
-    log("scout", f"{len(raw)} unique issues to vet")
+        try:
+            for item in gh.search_issues(q, max_pages=int(c.get("search_pages", 1))):
+                raw[item["html_url"]] = item
+        except RateLimited as e:
+            log("scout", f"{e}")
+            stopped = True
+            break
+
+    # Only vet issues we haven't checked recently, newest first, capped per run.
+    revet = float(c.get("revet_hours", 24)) * 3600
+    fresh = [i for i in raw.values() if "pull_request" not in i and not (
+        (row := store.one("SELECT at FROM scout_seen WHERE url=?", (i["html_url"],)))
+        and time.time() - row["at"] < revet)]
+    fresh.sort(key=lambda i: i.get("updated_at", ""), reverse=True)
+    todo = fresh[: int(c.get("max_vet_per_run", 40))]
+    log("scout", f"{len(raw)} found, {len(fresh)} not checked recently, vetting {len(todo)} this run")
 
     survivors: list[Candidate] = []
-    for item in raw.values():
-        if "pull_request" in item:
-            continue
-        repo_full = item["repository_url"].split("/repos/")[-1]
-        cand = Candidate(url=item["html_url"], repo=repo_full, number=item["number"],
-                         title=item["title"], body=item.get("body") or "",
-                         labels=[l["name"] for l in item.get("labels", [])],
-                         updated_at=item.get("updated_at", ""))
-
-        if dq.get("assigned", True) and (item.get("assignee") or item.get("assignees")):
-            continue
-        if title_blocked(cand.title, c.get("title_blocklist", [])):
-            continue
-        if repo_full not in repo_cache:
-            repo_cache[repo_full] = gh.get_repo(repo_full)
-        repo = repo_cache[repo_full]
-        if repo is None or repo.get("archived") or repo.get("disabled"):
-            continue
-        idle = days_since(repo.get("pushed_at"))
-        if idle is not None and idle > health.get("max_repo_idle_days", 90):
-            continue
-        if dq.get("open_linked_pr", True) and has_open_cross_ref_pr(gh.issue_timeline(repo_full, cand.number)):
-            continue
-
-        comments = gh.issue_comments(repo_full, cand.number)
-        cand.comments = [f"{(x.get('user') or {}).get('login', '?')}: {x.get('body') or ''}" for x in comments]
-        claim = comment_claimed(comments, c.get("claim_phrases", []))
-
-        if repo_full not in ext_cache:
-            ext_cache[repo_full] = merges_outsiders(
-                gh.recent_closed_pulls(repo_full, health.get("external_pr_sample", 30))) \
-                if health.get("check_external_prs", True) else False
-        if repo_full not in contrib_cache:
-            contrib_cache[repo_full] = gh.has_contributing(repo_full)
-
-        score(cand, c, help_wanted=any(l.lower() == "help wanted" for l in cand.labels),
-              has_contrib=contrib_cache[repo_full], externals=ext_cache[repo_full], claim=claim)
-        survivors.append(cand)
+    for item in todo:
+        if stopped:
+            break
+        try:
+            cand = _vet(item, c, dq, health, gh, repo_cache, ext_cache, contrib_cache, store)
+        except RateLimited as e:
+            log("scout", f"{e}; keeping {len(survivors)} results so far")
+            stopped = True
+            break
+        store.x("INSERT INTO scout_seen(url,at) VALUES(?,?) ON CONFLICT(url) DO UPDATE SET at=excluded.at",
+                (item["html_url"], time.time()))
+        if cand:
+            survivors.append(cand)
 
     survivors.sort(key=lambda x: x.score, reverse=True)
+    _finish(cfg, c, store, ai, survivors)
+    if c.get("projects", {}).get("enabled", True) and not stopped:
+        try:
+            find_projects(cfg, store, gh)
+        except RateLimited as e:
+            log("scout", f"projects: {e}")
+        except Exception as e:
+            log("scout", f"project discovery failed: {e}")
+    return survivors
 
-    # Optional AI pass: only the top few that we haven't triaged before.
-    if ai.enabled and c.get("ai_triage", True):
-        done = 0
-        for cand in survivors:
-            if done >= c.get("ai_triage_top_n", 5):
-                break
-            prev = store.one("SELECT ai_note FROM scout_issues WHERE url=?", (cand.url,))
-            if prev and prev["ai_note"]:
-                cand.ai_note = prev["ai_note"]
-                continue
-            t = ai_triage(ai, cand)
-            if t:
-                apply_triage(cand, t, c["scoring"])
-            done += 1
-        survivors.sort(key=lambda x: x.score, reverse=True)
 
+def _vet(item, c, dq, health, gh, repo_cache, ext_cache, contrib_cache, store):
+    """Check one issue. Returns a scored Candidate, or None if it fails a filter."""
+    repo_full = item["repository_url"].split("/repos/")[-1]
+    cand = Candidate(url=item["html_url"], repo=repo_full, number=item["number"],
+                     title=item["title"], body=item.get("body") or "",
+                     labels=[l["name"] for l in item.get("labels", [])],
+                     updated_at=item.get("updated_at", ""))
+
+    if dq.get("assigned", True) and (item.get("assignee") or item.get("assignees")):
+        return None
+    if title_blocked(cand.title, c.get("title_blocklist", [])):
+        return None
+    if repo_full not in repo_cache:
+        repo_cache[repo_full] = gh.get_repo(repo_full)
+    repo = repo_cache[repo_full]
+    if repo is None or repo.get("archived") or repo.get("disabled"):
+        return None
+    idle = days_since(repo.get("pushed_at"))
+    if idle is not None and idle > health.get("max_repo_idle_days", 90):
+        return None
+    if dq.get("open_linked_pr", True) and has_open_cross_ref_pr(gh.issue_timeline(repo_full, cand.number)):
+        return None
+
+    comments = gh.issue_comments(repo_full, cand.number)
+    cand.comments = [f"{(x.get('user') or {}).get('login', '?')}: {x.get('body') or ''}" for x in comments]
+    claim = comment_claimed(comments, c.get("claim_phrases", []))
+
+    if repo_full not in ext_cache:
+        ext_cache[repo_full] = merges_outsiders(
+            gh.recent_closed_pulls(repo_full, health.get("external_pr_sample", 30))) \
+            if health.get("check_external_prs", True) else False
+    if repo_full not in contrib_cache:
+        contrib_cache[repo_full] = gh.has_contributing(repo_full)
+
+    score(cand, c, help_wanted=any(l.lower() == "help wanted" for l in cand.labels),
+          has_contrib=contrib_cache[repo_full], externals=ext_cache[repo_full], claim=claim)
+    return cand
+
+
+
+def _finish(cfg, c, store, ai, survivors):
     new = 0
     alarm_at = int(c.get("alarm_score", 50))
     for cand in survivors:
@@ -213,9 +240,10 @@ def run(cfg: dict, store, gh, ai) -> list[Candidate]:
             emit(store, "alarm", "oss", f"ISSUE {cand.repo}#{cand.number} {cand.title[:90]} "
                  f"(score {cand.score})", cand.url, f"oss:{cand.url}")
         if exists:
-            store.x("UPDATE scout_issues SET score=?, reasons=?, ai_note=COALESCE(NULLIF(?,''),ai_note), "
-                    "last_seen=? WHERE url=?",
-                    (cand.score, " ; ".join(cand.reasons), cand.ai_note, now_iso(), cand.url))
+            # keep the AI-adjusted score once an issue has been triaged
+            store.x("UPDATE scout_issues SET score=CASE WHEN COALESCE(ai_note,'')!='' THEN score ELSE ? END, "
+                    "reasons=CASE WHEN COALESCE(ai_note,'')!='' THEN reasons ELSE ? END, last_seen=? WHERE url=?",
+                    (cand.score, " ; ".join(cand.reasons), now_iso(), cand.url))
         else:
             new += 1
             store.x("INSERT INTO scout_issues VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -223,12 +251,23 @@ def run(cfg: dict, store, gh, ai) -> list[Candidate]:
                      "|".join(cand.labels), " ; ".join(cand.reasons), cand.ai_note,
                      now_iso(), now_iso()))
     log("scout", f"{len(survivors)} survivors, {new} new")
-    if c.get("projects", {}).get("enabled", True):
-        try:
-            find_projects(cfg, store, gh)
-        except Exception as e:
-            log("scout", f"project discovery failed: {e}")
-    return survivors
+
+    # Optional AI triage of the best untriaged issues: queued, resumes after limits.
+    if ai is not None and ai.enabled and c.get("ai_triage", True):
+        from modules import aiq
+        queued = 0
+        for cand in survivors:
+            if queued >= int(c.get("ai_triage_top_n", 5)):
+                break
+            row = store.one("SELECT ai_note FROM scout_issues WHERE url=?", (cand.url,))
+            if row and row["ai_note"]:
+                continue
+            if aiq.enqueue(store, "scout_triage", cand.url, {
+                    "url": cand.url, "repo": cand.repo, "number": cand.number, "title": cand.title,
+                    "body": cand.body[:3000], "labels": cand.labels,
+                    "comments": [x[:1000] for x in cand.comments[-8:]]}):
+                queued += 1
+        aiq.drain(cfg, store, ai)
 
 
 # --------------------------------------------------------- project discovery

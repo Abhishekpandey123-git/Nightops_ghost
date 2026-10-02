@@ -28,8 +28,9 @@ def load(path: str | None = None) -> dict:
     with open(path or os.path.join(BASE, "config.yaml"), "r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
     # Register every secret we know about so logs never print them.
-    for name in ("GITHUB_TOKEN", "AI_API_KEY", "TELEGRAM_BOT_TOKEN", "SMTP_PASSWORD",
-                 "NIGHTOPS_PASSWORD_HASH", "NIGHTOPS_TOTP_SECRET"):
+    for name in ("GITHUB_TOKEN", "AI_API_KEY", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "SMTP_PASSWORD",
+                 "NIGHTOPS_PASSWORD_HASH", "NIGHTOPS_TOTP_SECRET", "GEMINI_API_KEY",
+                 "GROQ_API_KEY", "OPENROUTER_API_KEY"):
         register_secret(os.environ.get(name))
     return cfg
 

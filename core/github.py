@@ -2,6 +2,7 @@
 through the approval queue (modules/actions.py), which checks own_repos."""
 from __future__ import annotations
 
+import base64
 import time
 
 import requests
@@ -11,7 +12,17 @@ from .util import log
 API = "https://api.github.com"
 
 
+class RateLimited(RuntimeError):
+    """GitHub keeps refusing because we asked too fast. Callers should stop
+    for this run and keep what they have; the next run continues."""
+
+
 class GitHub:
+    # Minimum gap between any two requests. GitHub's secondary limits punish
+    # bursts; a steady pace avoids them entirely.
+    PACE_SECONDS = 0.8
+    SEARCH_PACE_SECONDS = 2.5
+
     def __init__(self, token: str | None):
         self.s = requests.Session()
         self.s.headers.update({"Accept": "application/vnd.github+json",
@@ -20,20 +31,37 @@ class GitHub:
         if token:
             self.s.headers["Authorization"] = f"Bearer {token}"
         self.token = token
+        self._last = 0.0
 
     # ------------------------------------------------------------------ core
+    def _pace(self, url: str) -> None:
+        gap = self.SEARCH_PACE_SECONDS if "/search/" in url else self.PACE_SECONDS
+        wait = self._last + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        self._last = time.time()
+
     def _req(self, method: str, url: str, params: dict | None = None,
              json: dict | None = None, retries: int = 3) -> requests.Response | None:
         for attempt in range(retries):
+            self._pace(url)
             r = self.s.request(method, url, params=params, json=json, timeout=30)
-            if r.status_code == 403 and r.headers.get("X-RateLimit-Remaining") == "0":
-                wait = max(int(r.headers.get("X-RateLimit-Reset", "0")) - int(time.time()), 1) + 2
-                log("github", f"rate limit, sleeping {min(wait, 900)}s")
-                time.sleep(min(wait, 900))
-                continue
-            if r.status_code in (403, 429) and "Retry-After" in r.headers:
-                time.sleep(min(int(r.headers["Retry-After"]) + 1, 120))
-                continue
+            if r.status_code in (403, 429):
+                body = r.text.lower()
+                if r.headers.get("X-RateLimit-Remaining") == "0" and "secondary" not in body:
+                    wait = max(int(r.headers.get("X-RateLimit-Reset", "0")) - int(time.time()), 1) + 2
+                    if wait > 900:
+                        raise RateLimited(f"hourly GitHub limit used up, resets in {wait // 60} min")
+                    log("github", f"hourly limit reached, waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+                if "secondary rate limit" in body or "retry-after" in {k.lower() for k in r.headers}:
+                    wait = int(r.headers.get("Retry-After", 0) or 60 * (attempt + 1))
+                    if attempt == retries - 1:
+                        raise RateLimited("GitHub secondary rate limit: stopping this run early")
+                    log("github", f"asked too fast, waiting {wait}s before retrying")
+                    time.sleep(min(wait, 300))
+                    continue
             if r.status_code == 404:
                 return None
             if r.status_code >= 500:
@@ -58,13 +86,20 @@ class GitHub:
             out.extend(items)
             if len(items) < 50:
                 break
-            time.sleep(2)
         return out
 
     def search_repos(self, query: str, per_page: int = 30) -> list[dict]:
         data = self._get("/search/repositories", {"q": query, "per_page": per_page,
                                                   "sort": "updated", "order": "desc"})
         return (data or {}).get("items", [])
+
+    def get_license_template(self, key: str) -> str | None:
+        data = self._get(f"/licenses/{key}")
+        return (data or {}).get("body")
+
+    def get_user_name(self, login: str) -> str:
+        data = self._get(f"/users/{login}") or {}
+        return data.get("name") or login
 
     def has_readme(self, repo: str) -> bool:
         return self._get(f"/repos/{repo}/readme") is not None
@@ -101,6 +136,26 @@ class GitHub:
         r = self._req("POST", f"{API}/repos/{repo}/issues",
                       json={"title": title, "body": body, "labels": labels or []})
         return r.json()["html_url"]
+
+    def add_file_pr(self, repo: str, base: str, branch: str, path: str, content: str,
+                    message: str, title: str, body: str) -> str:
+        """Create `branch` from `base`, add one NEW file on it, open a PR.
+        Never touches `base` itself, never overwrites an existing file."""
+        ref = self._get(f"/repos/{repo}/git/ref/heads/{base}")
+        if not ref:
+            raise RuntimeError(f"branch '{base}' not found in {repo}")
+        try:
+            self._req("POST", f"{API}/repos/{repo}/git/refs",
+                      json={"ref": f"refs/heads/{branch}", "sha": ref["object"]["sha"]})
+        except RuntimeError as e:
+            if "Reference already exists" not in str(e):
+                raise
+        if self._get(f"/repos/{repo}/contents/{path}", {"ref": branch}) is not None:
+            raise RuntimeError(f"{path} already exists on {branch}; nothing to add")
+        self._req("PUT", f"{API}/repos/{repo}/contents/{path}",
+                  json={"message": message, "branch": branch,
+                        "content": base64.b64encode(content.encode()).decode()})
+        return self.create_pr(repo, branch, base, title, body, draft=False)
 
     def create_pr(self, repo: str, head: str, base: str, title: str, body: str,
                   draft: bool = True) -> str:

@@ -1,0 +1,11 @@
+[Unit]
+Description=nightops AI queue every 10 minutes (resumes work paused by AI limits)
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=10min
+Unit=nightops@ai.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

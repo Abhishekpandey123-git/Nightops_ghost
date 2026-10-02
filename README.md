@@ -27,6 +27,7 @@ a gateway that caches, budgets, and routes every call to save tokens.
 | **jobs** | hourly (each source polled at its own polite interval) | Pulls postings from official public job APIs, drops senior roles, wrong locations, and stale posts, deduplicates across sources, scores against your skills, alarms on strong matches. Separates internships from jobs. | One-line "how well does this fit you" note for the top few new postings. |
 | **scout** | every 30 min | Finds open-source issues that are genuinely available (unassigned, no PR, not claimed in comments, not research-sized, in active repos that merge outside contributions) and healthy projects to contribute to. | Judges difficulty of the top few issues. |
 | **worker** | 01:30 IST nightly | Maintains **your** repos: runs tests and lint, counts TODO/FIXME, checks pinned packages against PyPI, checks for LICENSE/README, counts open PRs and issues, and drafts maintenance issues for approval. | Attempts fixes for issues **you** label, on a separate branch, as a draft PR you approve. |
+| **automations** | your schedules | Your own scripts in `automations/`, with a toolkit for alarms, Telegram, GitHub, saved state, and AI. See [AUTOMATIONS.md](AUTOMATIONS.md). | Optional, through the same AI gateway and limits. |
 | **brief** | 07:00 IST daily | Morning report: new internships, jobs, open-source finds, repo health, and approvals waiting. | Not used. |
 | **web console** | always on | Live alarm feed with sound and desktop notifications, plus a terminal for browsing results, tracking applications, and approving actions. | Not used. |
 
@@ -98,7 +99,8 @@ python nightops.py web
 python nightops.py set-password
 python nightops.py setup-2fa
 python nightops.py actions list|approve <id>|reject <id>
-python nightops.py status | doctor | notify-test
+python nightops.py status | doctor | notify-test | ai-test
+python nightops.py automations list|new <name>|run <name>
 ```
 
 **Web console**
@@ -117,16 +119,27 @@ run jobs|scout|worker|brief                          status | audit [n] | help
 
 ## The AI gateway
 
-All AI calls go through `core/ai.py`: off by default, cached, capped by a daily
-token budget, cheap model for screening and the strong model only for code
-fixes, long inputs trimmed. Works with Groq, OpenAI, OpenRouter, local Ollama,
-or the Claude API.
+AI is optional and off by default. When on, every call goes through
+`core/ai.py`:
 
-| Use | Model | Cap |
-|---|---|---|
-| job fit note | cheap | top 5 new postings per run |
-| issue difficulty | cheap | top 5 new issues per run |
-| code fix | strong | 2 labelled issues per night |
+- **Several providers at once**: Gemini, Groq (open-source Llama and gpt-oss
+  models), OpenRouter's free open-source models, local Ollama, or Claude.
+- **A route per task** with backups, e.g. job-fit notes try Groq first, then
+  Gemini, then OpenRouter. If one is paused, the next one answers.
+- **Local limits** (requests/min, tokens/min, requests/day, daily token cap)
+  per provider and model, so nightops pauses itself before a provider refuses.
+- **Learns from "limit reached" replies**: per-minute limits pause for the
+  seconds asked; daily quotas pause until the provider's reset (Gemini:
+  midnight Pacific).
+- **Pause and resume**: when every model for a task is paused, the task waits
+  in a queue. The `ai` timer continues every 10 minutes from the exact task
+  where it stopped, oldest first.
+- **Token saving**: one cache shared by all providers, trimmed inputs, Gemini's
+  hidden "thinking" counted in usage.
+
+`python nightops.py ai-test` checks every configured model with one tiny
+prompt; `status` and the console's `ai` command show usage, pauses, and
+waiting tasks.
 
 ## Configuration
 
@@ -149,11 +162,12 @@ See **SETUP.md** for installation.
 nightops.py            CLI
 config.yaml            settings
 core/                  ai gateway, config, events, github, notify, security, store, util
-modules/               jobs, scout, worker, briefing, actions (approval queue)
+modules/               jobs, scout, worker, briefing, actions (approval queue), aiq, automations
+automations/           your own scripts (three examples included)
 web/                   console app + static JS/CSS
 systemd/               hardened service units and timers
 deploy/                optional nginx HTTPS config
-tests/                 46 offline tests
+tests/                 94 offline tests
 ```
 
 ## Testing
@@ -162,13 +176,14 @@ tests/                 46 offline tests
 python -m unittest discover -s tests -v
 ```
 
-46 offline tests (no token, network, or AI key). They cover every job
+94 offline tests (no token, network, or AI key). They cover every job
 parser, the filters and scoring, cross-source deduplication, polite source
 intervals, password hashing, the RFC 6238 2FA test vectors, and the console's
 security: login required, wrong password, wrong 2FA, 2FA replay, lockout,
 cookie flags, CSRF, cross-origin blocking, hidden docs, "not a shell", and
-approvals requiring a fresh 2FA code. Plus scout, maintenance proposals, the
-AI gateway, and the briefing.
+approvals requiring a fresh 2FA code. Plus custom automations (schedules,
+allowlist, failure isolation, toolkit, examples), scout, maintenance proposals, the
+AI gateway (routing, fallback, limits, pause and resume), and the briefing.
 
 ## Limitations
 

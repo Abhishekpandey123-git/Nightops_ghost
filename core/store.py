@@ -15,6 +15,7 @@ CREATE INDEX IF NOT EXISTS jobs_dedupe ON jobs(dedupe_key);
 CREATE TABLE IF NOT EXISTS scout_issues(
     url TEXT PRIMARY KEY, repo TEXT, number INT, title TEXT, score INT,
     labels TEXT, reasons TEXT, ai_note TEXT, first_seen TEXT, last_seen TEXT);
+CREATE TABLE IF NOT EXISTS scout_seen(url TEXT PRIMARY KEY, at REAL);
 CREATE TABLE IF NOT EXISTS oss_projects(
     full_name TEXT PRIMARY KEY, url TEXT, description TEXT, stars INT,
     language TEXT, topics TEXT, score INT, reasons TEXT, first_seen TEXT, last_seen TEXT);
@@ -33,10 +34,14 @@ CREATE TABLE IF NOT EXISTS events(
     id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, title TEXT,
     url TEXT, dedupe TEXT UNIQUE, created TEXT, acked INT DEFAULT 0, pushed INT DEFAULT 0);
 
+CREATE TABLE IF NOT EXISTS ai_tasks(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, purpose TEXT, ref TEXT, payload TEXT,
+    status TEXT DEFAULT 'pending', attempts INT DEFAULT 0, created TEXT,
+    done_at TEXT, note TEXT, UNIQUE(purpose, ref));
 CREATE TABLE IF NOT EXISTS ai_cache(key TEXT PRIMARY KEY, response TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS ai_usage(
     id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, at TEXT, purpose TEXT,
-    model TEXT, tokens_in INT, tokens_out INT, cached INT);
+    model TEXT, tokens_in INT, tokens_out INT, cached INT, provider TEXT);
 
 CREATE TABLE IF NOT EXISTS audit(
     id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, actor TEXT, ip TEXT,
@@ -55,7 +60,14 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that newer versions need to databases made by older ones."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(ai_usage)")}
+        if "provider" not in cols:
+            self.db.execute("ALTER TABLE ai_usage ADD COLUMN provider TEXT")
 
     def q(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return self.db.execute(sql, params).fetchall()

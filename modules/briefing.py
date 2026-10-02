@@ -128,8 +128,14 @@ def build(cfg: dict, store) -> str:
     if not cfg.get("ai", {}).get("enabled"):
         L.append("- AI is disabled. Everything above was done without it.")
     else:
-        L.append(f"- {u['t']:,} tokens of {int(cfg['ai'].get('daily_token_budget', 0)):,} budget; "
-                 f"{u['n']} calls, {u['c']} from cache.")
+        L.append(f"- {u['t']:,} tokens used; {u['n']} calls, {u['c']} answered from cache.")
+        per = store.q("SELECT provider, COALESCE(SUM(tokens_in+tokens_out),0) t, COUNT(*) n FROM ai_usage "
+                      "WHERE day=? AND cached=0 AND provider IS NOT NULL GROUP BY provider", (today(),))
+        for r in per:
+            L.append(f"- \u2003{r['provider']}: {r['t']:,} tokens, {r['n']} calls")
+        waiting = store.one("SELECT COUNT(*) n FROM ai_tasks WHERE status='pending'")["n"]
+        if waiting:
+            L.append(f"- {waiting} AI task(s) waiting for a limit to reset; they resume automatically.")
     return "\n".join(L) + "\n"
 
 

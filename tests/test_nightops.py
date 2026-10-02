@@ -44,14 +44,18 @@ class Base(unittest.TestCase):
 
 # ------------------------------------------------------------------ AI gateway
 class AIGateway(Base):
-    def _ai(self, enabled=True, budget=100000, calls=None):
+    def _ai(self, enabled=True, cap=100000, calls=None):
         calls = calls if calls is not None else []
 
-        def transport(model, system, prompt, max_tokens):
+        def transport(provider, model, system, prompt, max_tokens):
             calls.append(model)
             return '{"ok": true}', 100, 20
-        c = cfg(ai={**BASE_CFG["ai"], "enabled": enabled, "daily_token_budget": budget})
-        return AI(c, self.store, transport=transport), calls
+        a = copy.deepcopy(BASE_CFG["ai"])
+        a["enabled"] = enabled
+        for p in a["providers"].values():
+            p["daily_tokens"] = cap
+            p.pop("min_interval_seconds", None)
+        return AI(cfg(ai=a), self.store, transport=transport), calls
 
     def test_disabled_returns_none(self):
         ai, calls = self._ai(enabled=False)
@@ -65,15 +69,17 @@ class AIGateway(Base):
         self.assertEqual(len(calls), 1)
         self.assertEqual(ai.used_today(), 120)
 
-    def test_budget_blocks(self):
-        ai, calls = self._ai(budget=50)
+    def test_own_cap_skips_to_next_provider(self):
+        ai, calls = self._ai(cap=50)          # every provider capped below the request size
         self.assertIsNone(ai.ask("x" * 400, max_tokens=100))
         self.assertEqual(calls, [])
+        self.assertIn("cap", ai.deferred["reason"])
 
-    def test_routing(self):
+    def test_routes_by_task(self):
         ai, calls = self._ai()
-        ai.ask("a", tier="cheap"); ai.ask("b", tier="strong")
-        self.assertEqual(calls, [BASE_CFG["ai"]["cheap_model"], BASE_CFG["ai"]["strong_model"]])
+        ai.ask("a", purpose="jobs_fit"); ai.ask("b", purpose="scout_triage")
+        r = BASE_CFG["ai"]["routes"]
+        self.assertEqual(calls, [r["jobs_fit"][0]["model"], r["scout_triage"][0]["model"]])
 
     def test_compress(self):
         out = AI.compress("A" * 5000 + "Z" * 5000, 1000)
@@ -117,6 +123,7 @@ class Scout(Base):
             def issue_comments(self, r, n): return []
             def recent_closed_pulls(self, r, n): return []
             def has_contributing(self, r): return False
+            def search_repos(self, q): return []
 
         ai = AI(cfg(), self.store)  # disabled
         out = scout.run(cfg(), self.store, GH(), ai)

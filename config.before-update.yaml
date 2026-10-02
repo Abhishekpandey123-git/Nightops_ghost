@@ -174,10 +174,6 @@ automations:
   timezone: Asia/Kolkata           # for "daily HH:MM"
   timeout_seconds: 300             # each run is stopped after this
   run:                             # add your automations directly below this line
-    github_releases:
-      schedule: manual
-      settings:
-        repos: [fastapi/fastapi, pydantic/pydantic]
     # page_watch:
     #   schedule: every 2h
     #   settings:
@@ -203,7 +199,7 @@ briefing:
 # AI gateway (optional): Gemini, with pause & resume on limits
 # ---------------------------------------------------------------------
 ai:
-  enabled: true
+  enabled: false
   max_input_chars: 12000
   cache: true                       # same question never costs twice, across all providers
   queue_drain_per_run: 20           # paused AI tasks a module may finish right away
@@ -220,15 +216,13 @@ ai:
       min_interval_seconds: 6       # gap between calls
       limits: {rpm: 8, rpd: 150}    # Google AI Studio -> "Rate limit" shows yours
       # daily_reset: America/Los_Angeles   (Gemini's daily quota resets at midnight Pacific; this is the default)
-    groq:
+    groq:                           # runs open-source models (Llama, gpt-oss) very fast
       type: openai_compatible
       base_url: https://api.groq.com/openai/v1
       api_key_env: GROQ_API_KEY
       daily_tokens: 300000
       min_interval_seconds: 2
-      min_output_tokens: 600
-      extra: {reasoning_effort: low}
-      limits: {rpm: 25}
+      limits: {rpm: 25}             # console.groq.com -> Settings -> Limits shows yours
     openrouter:                     # many free open-source models through one key
       type: openai_compatible
       base_url: https://openrouter.ai/api/v1
@@ -244,17 +238,18 @@ ai:
   # quota, the next takes over. If ALL are out, the task waits in the queue and
   # resumes from the same point when a limit resets.
   routes:
-    jobs_fit:
-      - {provider: groq, model: openai/gpt-oss-20b}
+    jobs_fit:                       # "how well does this job fit you" notes
+      - {provider: groq, model: llama-3.1-8b-instant}
       - {provider: gemini, model: gemini-3.1-flash-lite}
-    scout_triage:
+      - {provider: openrouter, model: "meta-llama/llama-3.3-70b-instruct:free"}
+    scout_triage:                   # judging open-source issue difficulty
       - {provider: gemini, model: gemini-3.1-flash-lite}
-      - {provider: groq, model: openai/gpt-oss-20b}
-    worker_fix:
-      - {provider: groq, model: openai/gpt-oss-120b}
+      - {provider: groq, model: llama-3.1-8b-instant}
+    worker_fix:                     # code fixes on your repos (only if worker.ai_fix.mode: builtin)
+      - {provider: groq, model: llama-3.3-70b-versatile}
       - {provider: gemini, model: gemini-3.1-flash-lite}
     default:
-      - {provider: groq, model: openai/gpt-oss-20b}
+      - {provider: groq, model: llama-3.1-8b-instant}
       - {provider: gemini, model: gemini-3.1-flash-lite}
 
 # ---------------------------------------------------------------------

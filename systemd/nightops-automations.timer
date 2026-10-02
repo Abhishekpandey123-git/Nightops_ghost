@@ -1,0 +1,11 @@
+[Unit]
+Description=nightops custom automations (checks every 5 minutes which ones are due)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=nightops@automations.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

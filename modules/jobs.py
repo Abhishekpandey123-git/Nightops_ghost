@@ -289,13 +289,14 @@ def run(cfg: dict, store, gh=None, ai=None) -> dict:
                  dk, now_iso()))
         new.append((jid, kind, score, j))
 
+    # Optional AI fit notes: queued, so they survive limits and resume later.
     if ai is not None and ai.enabled and c.get("ai_fit", {}).get("enabled", True):
+        from modules import aiq
         for jid, kind, score, j in sorted(new, key=lambda t: -t[2])[: int(c.get("ai_fit", {}).get("top_n", 5))]:
-            r = ai_fit(ai, j, c.get("profile", ""))
-            if r:
-                bonus = {"high": 15, "medium": 0, "low": -20}.get(str(r.get("fit")).lower(), 0)
-                store.x("UPDATE jobs SET score=score+?, ai_note=? WHERE id=?",
-                        (bonus, f"{r.get('fit')}: {r.get('why', '')}"[:200], jid))
+            aiq.enqueue(store, "jobs_fit", jid, {"id": jid, "title": j["title"], "company": j["company"],
+                                                 "location": j["location"],
+                                                 "description": j["description"][:3000]})
+        aiq.drain(cfg, store, ai)
 
     alarm_at = int(c.get("alarm_score", 40))
     for jid, kind, _, j in new:

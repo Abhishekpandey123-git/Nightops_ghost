@@ -47,6 +47,9 @@ def decide(cfg: dict, store, gh, action_id: int, approve: bool) -> str:
     try:
         if row["kind"] == "open_issue":
             url = gh.create_issue(repo, p["title"], p["body"], p.get("labels"))
+        elif row["kind"] == "add_file_pr":
+            url = gh.add_file_pr(repo, p["base"], p["branch"], p["path"], p["content"],
+                                 p["message"], p["title"], p["body"])
         elif row["kind"] == "open_pr":
             url = gh.create_pr(repo, p["head"], p["base"], p["title"], p["body"], p.get("draft", True))
         else:
