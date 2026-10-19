@@ -189,6 +189,7 @@ cd /opt/nightops
 cp systemd/nightops@.service systemd/nightops-web.service systemd/nightops-*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now nightops-web.service
+systemctl enable --now nightops-bot.service   # optional: Telegram menu (see 8)
 systemctl enable --now nightops-jobs.timer nightops-scout.timer nightops-worker.timer nightops-brief.timer nightops-ai.timer nightops-automations.timer
 systemctl status nightops-web --no-pager
 systemctl list-timers 'nightops*'
@@ -254,6 +255,66 @@ Alarms appear in the console; Telegram also sends them to your phone.
 4. Add `TELEGRAM_BOT_TOKEN=` and `TELEGRAM_CHAT_ID=` to `.env`.
 5. In `config.yaml`: `notify: channels: [telegram]`
 6. `sudo -u nightops venv/bin/python nightops.py notify-test`
+
+### The Telegram bot (private menu, filters, quiet mode)
+
+Alerts work without this. The bot adds a menu on your phone: status, jobs,
+internships, open-source issues with filter buttons, approvals, quiet mode.
+
+**Who can use it.** Only `TELEGRAM_CHAT_ID`, plus any ids you list in
+`TELEGRAM_ALLOWED_CHAT_IDS` (comma separated). In a group, the person writing
+must also be allowed (`TELEGRAM_ALLOWED_USER_IDS`, which defaults to the
+allowed private chats). Everyone else gets **no reply at all**, and you get one
+warning a day per stranger with their id, in case you want to add them. The
+command menu is only installed for allowed chats, so strangers don't see one.
+
+Start it (24/7, restarts on failure, no open port; it polls Telegram):
+
+```bash
+cd /var/www/FLCS_Packages/nightops
+sed 's#/opt/nightops#/var/www/FLCS_Packages/nightops#g' systemd/nightops-bot.service > /etc/systemd/system/nightops-bot.service
+systemctl daemon-reload
+systemctl enable --now nightops-bot.service
+journalctl -u nightops-bot -n 20 --no-pager -o cat
+```
+
+Then open the bot in Telegram and send `/start`. There is one button under the
+text box, **🏠 Home**. The Home screen shows everything at a glance (open-source
+issues, GSoC, jobs, internships, freelance/contract, approvals, alarms, AI use)
+and refreshes itself every 5 minutes. Its buttons open each category inside the
+same message, and every category has a 🏠 Home button to go back. Tapping
+🏠 Home again posts a fresh Home screen at the bottom and removes the old one.
+The time shown is Indian time; change it with `notify.telegram.timezone` in
+config.yaml (for example `UTC`).
+
+The Freelance button shows contract and freelance roles found by your job
+feeds. Searching Freelancer.com and Upwork directly isn't built yet.
+
+The commands still work if you prefer typing:
+
+| Command | What it does |
+|---|---|
+| `/status` | counts, AI usage, current filters |
+| `/alarms`, `/ack all` | unacknowledged alarms |
+| `/jobs`, `/interns`, `/mark <id> saved` | best new postings |
+| `/oss` | open-source issues, with buttons: recommended, easy, type, GSoC |
+| `/queue`, `/approve <id> <2FA>`, `/reject <id>` | GitHub actions waiting for you |
+| `/filters` | choose which alerts reach your phone |
+| `/quiet 8`, `/resume` | pause alerts for 8 hours (they're kept) |
+| `/brief`, `/run scout` | latest briefing; run jobs, scout, ai or brief now |
+
+Approving needs a **fresh code from your authenticator app**, the same rule as
+the web console; the bot deletes your message with the code. One code can't be
+used twice, in Telegram or the console.
+
+**Filters** decide what reaches your phone: recommended / maybe / all issues,
+maximum difficulty, fix types, GSoC shown/hidden/only, jobs and internships
+on/off, minimum job score, approvals, failures. Filtered alerts still appear in
+the web console and the briefing. Warnings about strangers using your bot are
+never filtered. Defaults live under `notify: telegram: filters:` in config.yaml.
+
+Only one program may read the bot's messages: don't open the `getUpdates` link
+in a browser while the bot is running.
 
 ### AI (Gemini, Groq, and open-source models)
 

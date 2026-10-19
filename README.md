@@ -31,6 +31,47 @@ a gateway that caches, budgets, and routes every call to save tokens.
 | **brief** | 07:00 IST daily | Morning report: new internships, jobs, open-source finds, repo health, and approvals waiting. | Not used. |
 | **web console** | always on | Live alarm feed with sound and desktop notifications, plus a terminal for browsing results, tracking applications, and approving actions. | Not used. |
 
+### Open-source issue alerts
+
+Every open-source alert (Telegram, console feed, morning briefing) describes
+the issue so you can decide in seconds:
+
+```
+✅ RECOMMENDED · score 65
+cuga-project/cuga-agent#858 — feat(apps): new app "Wikipedia Fact Checker"
+Fix type:   Code change
+Difficulty: 15/100 (easy) — labelled beginner-friendly, comes with step-by-step instructions
+GSoC:       No
+Verdict:    easy, clear code task that matches your skills
+Judged by:  rules
+https://github.com/cuga-project/cuga-agent/issues/858
+```
+
+- **Fix type**: code, documentation, tests, build/CI, or research/design
+  (a decision or benchmark is needed before any code).
+- **Difficulty 0–100**: from difficulty labels, wording (refactor, performance,
+  concurrency...), size, step-by-step instructions, and GSoC scope. A
+  beginner label on hard content is called out.
+- **GSoC**: from labels, title, description and comments, with the evidence.
+- **Verdict**: recommended / maybe / skip, with the reason. Claimed issues,
+  research/design work, GSoC-sized projects and anything over 65/100 are skipped.
+
+Without AI this is rule-based. With AI on, the alert waits (up to
+`scout.alerts.wait_for_ai_hours`) for the AI to read the thread; the AI refines
+the type and difficulty and can make the verdict more cautious, never less.
+"Skip" issues go to the console only, unless `scout.alerts.push_not_recommended: true`.
+
+### Telegram bot
+
+A private bot on your phone with one **🏠 Home** button: a screen that shows
+everything at a glance and refreshes itself every 5 minutes, with buttons for
+open source, GSoC, jobs, internships, freelance, projects, approvals, alarms,
+alert settings and quiet mode (each opens in the same message). Commands like
+`/approve <id> <2FA>` and `/quiet 8` still work. Only the chat
+ids you allow get any answer; everyone else is ignored and you're warned. No
+webhook and no open port (long polling). Every alert arrives as its own message
+with buttons (Open, Ack, and Save / Applied / Hide for jobs). See SETUP.md.
+
 ### Job sources
 
 Only official, public, documented APIs. No logins, no scraping.
@@ -167,7 +208,7 @@ automations/           your own scripts (three examples included)
 web/                   console app + static JS/CSS
 systemd/               hardened service units and timers
 deploy/                optional nginx HTTPS config
-tests/                 94 offline tests
+tests/                 139 offline tests
 ```
 
 ## Testing
@@ -176,7 +217,7 @@ tests/                 94 offline tests
 python -m unittest discover -s tests -v
 ```
 
-94 offline tests (no token, network, or AI key). They cover every job
+139 offline tests (no token, network, or AI key). They cover every job
 parser, the filters and scoring, cross-source deduplication, polite source
 intervals, password hashing, the RFC 6238 2FA test vectors, and the console's
 security: login required, wrong password, wrong 2FA, 2FA replay, lockout,
