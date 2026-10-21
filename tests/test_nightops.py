@@ -192,7 +192,9 @@ class Briefing(Base):
         self.store.x("INSERT INTO jobs(id,kind,source,title,company,location,url,posted,remote,score,"
                      "reasons,ai_note,status,dedupe_key,first_seen) VALUES('j1','internship','remotive',"
                      "'Python Intern','Acme','Remote','https://x.y/1','',1,50,'','','new','k',?)", (now_iso(),))
-        md = briefing.build(cfg(), self.store)
+        c = cfg()
+        c["ai"]["enabled"] = False          # independent of your own config.yaml
+        md = briefing.build(c, self.store)
         self.assertIn("Python Intern", md)
         self.assertIn("AI is disabled", md)
         self.assertIn("<h2>", briefing._md_to_html(md))

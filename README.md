@@ -61,6 +61,14 @@ Without AI this is rule-based. With AI on, the alert waits (up to
 the type and difficulty and can make the verdict more cautious, never less.
 "Skip" issues go to the console only, unless `scout.alerts.push_not_recommended: true`.
 
+### Freelancer.com projects
+
+With your own Freelancer.com token, nightops searches active projects every 3
+hours through the official API (read-only), scores them against your skills,
+hides scams (fees, payment up front, account renting, off-platform contact) and
+alerts you to strong matches. "Draft bid" writes an honest proposal you edit and
+send yourself: nightops never bids or messages anyone. See SETUP.md.
+
 ### Telegram bot
 
 A private bot on your phone with one **🏠 Home** button: a screen that shows
@@ -208,7 +216,7 @@ automations/           your own scripts (three examples included)
 web/                   console app + static JS/CSS
 systemd/               hardened service units and timers
 deploy/                optional nginx HTTPS config
-tests/                 139 offline tests
+tests/                 162 offline tests
 ```
 
 ## Testing
@@ -217,7 +225,7 @@ tests/                 139 offline tests
 python -m unittest discover -s tests -v
 ```
 
-139 offline tests (no token, network, or AI key). They cover every job
+162 offline tests (no token, network, or AI key). They cover every job
 parser, the filters and scoring, cross-source deduplication, polite source
 intervals, password hashing, the RFC 6238 2FA test vectors, and the console's
 security: login required, wrong password, wrong 2FA, 2FA replay, lockout,

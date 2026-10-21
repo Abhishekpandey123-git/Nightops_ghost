@@ -77,3 +77,15 @@ def new_token() -> str:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def totp_fresh(store, secret_b32: str | None, code: str) -> bool:
+    """Valid 2FA code that hasn't been used before anywhere in nightops (web
+    console or Telegram share this record, so a code can't be replayed)."""
+    if not verify_totp(secret_b32, code):
+        return False
+    last = store.kv_get("totp:last", "") or ""
+    if last and last.split(":")[0] == code.strip() and time.time() - float(last.split(":")[1]) < 120:
+        return False
+    store.kv_set("totp:last", f"{code.strip()}:{time.time()}")
+    return True

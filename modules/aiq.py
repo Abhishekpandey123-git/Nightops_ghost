@@ -60,6 +60,15 @@ def _scout_triage(cfg, store, ai, p) -> str:
     reasons = ((row["reasons"] + " ; ") if row and row["reasons"] else "") + " ; ".join(c.reasons)
     store.x("UPDATE scout_issues SET score=score+?, reasons=?, ai_note=? WHERE url=?",
             (c.score, reasons, c.ai_note, p["url"]))
+    from modules import issue_profile
+    from modules.scout import save_profile, send_issue_alert
+    row = store.one("SELECT score, profile FROM scout_issues WHERE url=?", (p["url"],))
+    if row:
+        base = json.loads(row["profile"]) if row["profile"] else issue_profile.build(
+            p["title"], p["body"], p["labels"], p["comments"])
+        prof = issue_profile.merge_ai(base, t, row["score"], int(cfg["scout"].get("alarm_score", 50)))
+        save_profile(store, p["url"], prof)
+        send_issue_alert(cfg, store, p["url"])
     return "done"
 
 

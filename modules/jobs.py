@@ -303,8 +303,19 @@ def run(cfg: dict, store, gh=None, ai=None) -> dict:
         row = store.one("SELECT score FROM jobs WHERE id=?", (jid,))
         if row["score"] >= alarm_at:
             label = "INTERNSHIP" if kind == "internship" else "JOB"
+            note = store.one("SELECT ai_note, location FROM jobs WHERE id=?", (jid,))
+            icon = "\U0001F393" if kind == "internship" else "\U0001F4BC"
+            detail = "\n".join(x for x in [
+                f"{icon} {label} \u00b7 score {row['score']}",
+                f"{j['title'][:120]}",
+                f"Company:  {j['company'][:60]}",
+                f"Where:    {(note['location'] if note else j['location'])[:80] or 'not stated'}",
+                f"AI note:  {note['ai_note']}" if note and note["ai_note"] else "",
+                f"Id:       {jid}  (/mark {jid} saved)",
+                j["url"]] if x)
             emit(store, "alarm", "jobs", f"{label} [{jid}] {j['title'][:90]} @ {j['company'][:40]} "
-                 f"(score {row['score']})", j["url"], f"job:{jid}")
+                 f"(score {row['score']})", j["url"], f"job:{jid}", detail=detail,
+                 meta={"cat": kind, "score": row["score"], "id": jid})
     if new:
         emit(store, "info", "jobs", f"{len(new)} new matching postings", "", f"jobs-batch:{now_iso()}")
     log("jobs", f"{len(fetched)} fetched, {kept} matched filters, {len(new)} new")

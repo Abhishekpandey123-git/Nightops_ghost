@@ -1,0 +1,11 @@
+[Unit]
+Description=nightops Freelancer.com search (read-only; it checks every 3 hours at most)
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=1h
+Unit=nightops@freelance.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

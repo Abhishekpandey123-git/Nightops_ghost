@@ -10,9 +10,11 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
+import json
 import time
 
 from core.events import emit
+from modules import issue_profile
 from core.github import RateLimited
 from core.util import days_since, log, now, now_iso
 
@@ -32,6 +34,7 @@ class Candidate:
     score: int = 0
     reasons: list[str] = field(default_factory=list)
     ai_note: str = ""
+    profile: dict = field(default_factory=dict)
 
 
 # ------------------------------------------------------------ pure helpers
@@ -116,14 +119,23 @@ def ai_triage(ai, c: Candidate) -> dict | None:
     prompt = (
         f"Repository: {c.repo}\nIssue #{c.number}: {c.title}\nLabels: {', '.join(c.labels)}\n\n"
         f"Body:\n{c.body[:3000]}\n\nRecent comments:\n{thread[:3000]}\n\n"
-        'Return JSON: {"difficulty":"easy|medium|hard","already_claimed":true|false,'
-        '"fix_likely_upstream":true|false,"why":"one short sentence"}')
+        "Judge this issue for a first-time contributor who knows Python/FastAPI.\n"
+        'Return JSON: {"type":"code|docs|tests|build/CI|design",'
+        '"difficulty_0_100":<0 trivial .. 100 expert>,'
+        '"gsoc":true|false,"already_claimed":true|false,"fix_likely_upstream":true|false,'
+        '"recommended":"yes|maybe|no","why":"one short sentence"}\n'
+        "type=design means research, benchmarking or a decision is needed before any code.")
     return ai.ask_json(prompt, system=TRIAGE_SYSTEM, tier="cheap",
-                       max_tokens=200, purpose="scout_triage")
+                       max_tokens=260, purpose="scout_triage")
 
 
 def apply_triage(c: Candidate, t: dict, w: dict) -> None:
-    diff = str(t.get("difficulty", "")).lower()
+    diff = t.get("difficulty_0_100", t.get("difficulty"))
+    try:
+        n = int(diff)
+        diff = "easy" if n <= 30 else ("hard" if n > 60 else "medium")
+    except (TypeError, ValueError):
+        diff = str(diff or "").lower()
     if diff == "hard":
         c.score += w.get("ai_hard_penalty", -30); c.reasons.append("AI: hard")
     elif diff == "easy":
@@ -133,6 +145,50 @@ def apply_triage(c: Candidate, t: dict, w: dict) -> None:
     if t.get("fix_likely_upstream"):
         c.score += w.get("ai_upstream_penalty", -30); c.reasons.append("AI: fix likely upstream")
     c.ai_note = str(t.get("why", ""))[:200]
+
+
+# ------------------------------------------------------------------ alerts
+def alert_settings(c: dict) -> dict:
+    a = c.get("alerts") or {}
+    return {"wait_for_ai_hours": float(a.get("wait_for_ai_hours", 6)),
+            "push_not_recommended": bool(a.get("push_not_recommended", False))}
+
+
+def save_profile(store, url: str, p: dict) -> None:
+    store.x("UPDATE scout_issues SET kind=?, difficulty=?, gsoc=?, recommend=?, profile=? WHERE url=?",
+            (p["kind"], p["difficulty"], int(bool(p["gsoc"])), p["recommend"], json.dumps(p), url))
+
+
+def send_issue_alert(cfg: dict, store, url: str) -> bool:
+    """Raise the alert for one issue using its stored profile. Only once per issue.
+    Recommended / maybe -> alarm (Telegram). Not recommended -> console only,
+    unless scout.alerts.push_not_recommended is true."""
+    row = store.one("SELECT * FROM scout_issues WHERE url=?", (url,))
+    if not row or row["alert"] != "pending":
+        return False
+    p = json.loads(row["profile"]) if row["profile"] else None
+    if p is None:
+        return False
+    a = alert_settings(cfg["scout"])
+    level_ = "alarm" if p["recommend"] in ("yes", "maybe") or a["push_not_recommended"] else "info"
+    tag = {"yes": "RECOMMENDED", "maybe": "MAYBE", "no": "SKIP"}[p["recommend"]]
+    title = (f"ISSUE {row['repo']}#{row['number']} {row['title'][:80]} \u00b7 {tag} \u00b7 "
+             f"{p['difficulty']}/100 \u00b7 {p['kind']}" + (" \u00b7 GSoC" if p["gsoc"] else "")
+             + f" (score {row['score']})")
+    detail = issue_profile.telegram_text(row["repo"], row["number"], row["title"], url, row["score"], p)
+    emit(store, level_, "oss", title, url, f"oss:{url}", detail=detail,
+         meta={"cat": "oss", "recommend": p["recommend"], "difficulty": p["difficulty"],
+               "kind": p["kind"], "gsoc": bool(p["gsoc"]), "score": row["score"]})
+    store.x("UPDATE scout_issues SET alert='sent' WHERE url=?", (url,))
+    return True
+
+
+def flush_stale_alerts(cfg: dict, store) -> int:
+    """Alerts that waited too long for AI (limits, outages) go out with the rule verdict."""
+    hours = alert_settings(cfg["scout"])["wait_for_ai_hours"]
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours * 3600))
+    rows = store.q("SELECT url FROM scout_issues WHERE alert='pending' AND first_seen<=?", (cutoff,))
+    return sum(send_issue_alert(cfg, store, r["url"]) for r in rows)
 
 
 # -------------------------------------------------------------------- run
@@ -227,37 +283,41 @@ def _vet(item, c, dq, health, gh, repo_cache, ext_cache, contrib_cache, store):
 
     score(cand, c, help_wanted=any(l.lower() == "help wanted" for l in cand.labels),
           has_contrib=contrib_cache[repo_full], externals=ext_cache[repo_full], claim=claim)
+    cand.profile = issue_profile.build(cand.title, cand.body, cand.labels, cand.comments,
+                                       repo_topics=repo.get("topics") or [], score=cand.score,
+                                       alarm_score=int(c.get("alarm_score", 50)), claimed=bool(claim))
     return cand
 
 
 
 def _finish(cfg, c, store, ai, survivors):
-    new = 0
+    new_urls, new = [], 0
     alarm_at = int(c.get("alarm_score", 50))
     for cand in survivors:
         exists = store.one("SELECT url FROM scout_issues WHERE url=?", (cand.url,))
-        if not exists and cand.score >= alarm_at:
-            emit(store, "alarm", "oss", f"ISSUE {cand.repo}#{cand.number} {cand.title[:90]} "
-                 f"(score {cand.score})", cand.url, f"oss:{cand.url}")
         if exists:
             # keep the AI-adjusted score once an issue has been triaged
             store.x("UPDATE scout_issues SET score=CASE WHEN COALESCE(ai_note,'')!='' THEN score ELSE ? END, "
                     "reasons=CASE WHEN COALESCE(ai_note,'')!='' THEN reasons ELSE ? END, last_seen=? WHERE url=?",
                     (cand.score, " ; ".join(cand.reasons), now_iso(), cand.url))
-        else:
-            new += 1
-            store.x("INSERT INTO scout_issues VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (cand.url, cand.repo, cand.number, cand.title, cand.score,
-                     "|".join(cand.labels), " ; ".join(cand.reasons), cand.ai_note,
-                     now_iso(), now_iso()))
+            continue
+        new += 1
+        store.x("INSERT INTO scout_issues(url,repo,number,title,score,labels,reasons,ai_note,first_seen,"
+                "last_seen,alert) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (cand.url, cand.repo, cand.number, cand.title, cand.score, "|".join(cand.labels),
+                 " ; ".join(cand.reasons), cand.ai_note, now_iso(), now_iso(),
+                 "pending" if cand.score >= alarm_at else None))
+        if cand.profile:
+            save_profile(store, cand.url, cand.profile)
+        new_urls.append(cand.url)
     log("scout", f"{len(survivors)} survivors, {new} new")
 
     # Optional AI triage of the best untriaged issues: queued, resumes after limits.
+    queued_urls = set()
     if ai is not None and ai.enabled and c.get("ai_triage", True):
         from modules import aiq
-        queued = 0
         for cand in survivors:
-            if queued >= int(c.get("ai_triage_top_n", 5)):
+            if len(queued_urls) >= int(c.get("ai_triage_top_n", 5)):
                 break
             row = store.one("SELECT ai_note FROM scout_issues WHERE url=?", (cand.url,))
             if row and row["ai_note"]:
@@ -266,8 +326,17 @@ def _finish(cfg, c, store, ai, survivors):
                     "url": cand.url, "repo": cand.repo, "number": cand.number, "title": cand.title,
                     "body": cand.body[:3000], "labels": cand.labels,
                     "comments": [x[:1000] for x in cand.comments[-8:]]}):
-                queued += 1
+                queued_urls.add(cand.url)
+
+    # New alerts: issues waiting for AI are sent by the triage handler (with the AI
+    # verdict); everything else goes out now with the rule-based verdict.
+    for url in new_urls:
+        if url not in queued_urls:
+            send_issue_alert(cfg, store, url)
+    if queued_urls:
+        from modules import aiq
         aiq.drain(cfg, store, ai)
+    flush_stale_alerts(cfg, store)
 
 
 # --------------------------------------------------------- project discovery

@@ -1,33 +1,121 @@
-"""Events feed (what the web console shows and alarms on) + audit log."""
+"""Events feed (what the web console shows and alarms on) + audit log.
+
+push_pending() decides what reaches your phone: alarms, plus "approval needed"
+and failure warnings, filtered by your alert filters (core/alert_filters.py)
+and held back while you have quiet mode on. Everything stays in the feed.
+"""
 from __future__ import annotations
 
+import json
 import sqlite3
 
-from . import notify
+from . import alert_filters, notify
 from .util import log, now_iso
 
 LEVELS = ("info", "warn", "alarm")
+MAX_SINGLE = 5          # up to this many alerts go out as separate messages with buttons
 
 
 def emit(store, level: str, source: str, title: str, url: str = "",
-         dedupe: str | None = None) -> int | None:
-    """Add an event. Same dedupe key never appears twice."""
+         dedupe: str | None = None, detail: str | None = None, meta: dict | None = None) -> int | None:
+    """Add an event. Same dedupe key never appears twice. `detail` (optional,
+    multi-line) is what Telegram/email show instead of the one-line title;
+    `meta` holds facts the alert filters use (category, verdict, difficulty...)."""
     level = level if level in LEVELS else "info"
     try:
-        return store.x("INSERT INTO events(level,source,title,url,dedupe,created) VALUES(?,?,?,?,?,?)",
+        return store.x("INSERT INTO events(level,source,title,url,dedupe,created,detail,meta) "
+                       "VALUES(?,?,?,?,?,?,?,?)",
                        (level, source, title[:300], url or "", dedupe or f"{source}:{title}:{url}",
-                        now_iso()))
+                        now_iso(), (detail or None) and detail[:3000], json.dumps(meta) if meta else None))
     except sqlite3.IntegrityError:
         return None
 
 
-def push_pending(cfg: dict, store) -> None:
-    """Send new alarm-level events to Telegram/email (if configured)."""
-    rows = store.q("SELECT * FROM events WHERE pushed=0 AND level='alarm' ORDER BY id LIMIT 25")
-    if rows and (cfg.get("notify", {}).get("channels") or []):
-        body = "\n\n".join(f"[{r['source']}] {r['title']}\n{r['url']}".strip() for r in rows)
-        notify.send(cfg, f"nightops: {len(rows)} new alarm(s)", body)
-    store.x("UPDATE events SET pushed=1 WHERE pushed=0")
+def _meta(row) -> dict:
+    try:
+        return json.loads(row["meta"]) if row["meta"] else {}
+    except (ValueError, KeyError, IndexError):
+        return {}
+
+
+def _text(row) -> str:
+    return (row["detail"] if row["detail"] else f"[{row['source']}] {row['title']}\n{row['url']}").strip()
+
+
+def alert_buttons(row, meta: dict) -> list:
+    """Buttons under one alert: open the link, acknowledge, and for jobs save/apply/hide."""
+    first = []
+    if row["url"].startswith("https://"):
+        first.append(("Open \u2197", row["url"]))
+    first.append(("\u2713 Ack", f"ack:{row['id']}"))
+    rows = [first]
+    if meta.get("cat") in ("job", "internship") and meta.get("id"):
+        jid = meta["id"]
+        rows.append([("\u2B50 Save", f"job:{jid}:saved"), ("\u2705 Applied", f"job:{jid}:applied"),
+                     ("\U0001F648 Hide", f"job:{jid}:hidden")])
+    if meta.get("cat") == "freelance" and meta.get("id"):
+        fid = meta["id"]
+        rows.append([("\u270D\uFE0F Draft bid", f"fl:d:{fid}"), ("\u2B50 Save", f"fl:s:{fid}"),
+                     ("\U0001F648 Hide", f"fl:h:{fid}")])
+    return rows
+
+
+def push_pending(cfg: dict, store, api=None) -> dict:
+    """Send new alerts that pass the filters. Returns counts (sent/filtered/muted)."""
+    rows = store.q("SELECT * FROM events WHERE pushed=0 AND level IN ('alarm','warn') ORDER BY id LIMIT 50")
+    stats = {"sent": 0, "filtered": 0, "muted": 0}
+    channels = (cfg.get("notify", {}) or {}).get("channels") or []
+    if not rows or not channels:
+        store.x("UPDATE events SET pushed=1 WHERE pushed=0")
+        return stats
+
+    f = alert_filters.get(cfg, store)
+    quiet = alert_filters.muted(store)
+    send = []
+    for r in rows:
+        meta = _meta(r)
+        if r["level"] == "warn" and alert_filters.category(r, meta) not in ("approvals", "failures", "security"):
+            continue                                   # other warnings: console only, as before
+        ok, _ = alert_filters.passes(r, meta, f)
+        if not ok:
+            stats["filtered"] += 1
+        elif quiet:
+            stats["muted"] += 1
+        else:
+            send.append((r, meta))
+    ids = [r["id"] for r in rows]
+    store.x(f"UPDATE events SET pushed=1 WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))
+    if stats["muted"]:
+        store.kv_set("tg:muted_count", str(int(store.kv_get("tg:muted_count") or 0) + stats["muted"]))
+    if not send:
+        return stats
+
+    if "telegram" in channels:
+        from .telegram import TelegramAPI, allowed_chats
+        api = api or TelegramAPI.from_env(cfg)
+        chats = allowed_chats()
+        try:
+            if api.configured and chats:
+                if len(send) <= MAX_SINGLE:
+                    for r, meta in send:
+                        for chat in chats:
+                            api.send(chat, _text(r), buttons=alert_buttons(r, meta))
+                else:
+                    body = "\n\n\u2014\u2014\u2014\n\n".join(_text(r) for r, _ in send[:MAX_SINGLE])
+                    more = len(send) - MAX_SINGLE
+                    body = f"nightops: {len(send)} new alerts\n\n{body}\n\n+{more} more: /alarms"
+                    for chat in chats:
+                        api.send(chat, body, buttons=[[("See all alarms", "menu:alarms"),
+                                                        ("\u2713 Ack all", "ack:all")]])
+                stats["sent"] = len(send)
+        except Exception as e:
+            log("notify", f"telegram failed: {e}")
+    others = [c for c in channels if c != "telegram"]
+    if others:
+        body = "\n\n\u2014\u2014\u2014\n\n".join(_text(r) for r, _ in send)
+        notify.send(cfg, f"nightops: {len(send)} new alert(s)", body, only=others)
+        stats["sent"] = len(send)
+    return stats
 
 
 def audit(store, actor: str, ip: str, action: str, detail: str = "") -> None:

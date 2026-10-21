@@ -70,13 +70,19 @@ def build(cfg: dict, store) -> str:
             L.append(f"- [{r['id']}] score {r['score']}: **{r['title']}** @ {r['company']} "
                      f"({r['location'][:40]}) [open]({r['url']}){note}")
 
-    issues = store.q("SELECT * FROM scout_issues WHERE first_seen>=? ORDER BY score DESC LIMIT 5", (since,))
+    issues = store.q("SELECT * FROM scout_issues WHERE first_seen>=? ORDER BY CASE recommend WHEN 'yes' THEN 0 "
+                     "WHEN 'maybe' THEN 1 WHEN 'no' THEN 3 ELSE 2 END, score DESC LIMIT 5", (since,))
     L += ["", "## Open-source issues for you"]
     if not issues:
         L.append("- No new candidates since the last briefing.")
     for f in issues:
         note = f" \u2014 AI: {f['ai_note']}" if f["ai_note"] else ""
-        L.append(f"- [{f['repo']}#{f['number']}]({f['url']}) score {f['score']}: {f['title']}{note}")
+        prof = ""
+        if f["recommend"]:
+            tag = {"yes": "recommended", "maybe": "maybe", "no": "skip"}[f["recommend"]]
+            prof = (f" \u2014 **{tag}**, {f['kind']}, difficulty {f['difficulty']}/100"
+                    + (", GSoC" if f["gsoc"] else ""))
+        L.append(f"- [{f['repo']}#{f['number']}]({f['url']}) score {f['score']}: {f['title']}{prof}{note}")
 
     projects = store.q("SELECT * FROM oss_projects WHERE first_seen>=? ORDER BY score DESC LIMIT 5", (since,))
     L += ["", "## Open-source projects worth a look"]

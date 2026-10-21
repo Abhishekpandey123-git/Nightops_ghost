@@ -30,11 +30,12 @@ from fastapi.staticfiles import StaticFiles
 from core.config import BASE
 from core.events import audit
 from core.security import token_hash, new_token, verify_password, verify_totp
+from core.security import totp_fresh as _totp_fresh
 from core.util import now_iso
 from modules import actions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RUNNABLE = ("jobs", "scout", "worker", "brief", "ai")
+RUNNABLE = ("jobs", "scout", "worker", "brief", "ai", "freelance")
 
 HELP = """commands
   alarms [n]            unacknowledged alarms
@@ -43,7 +44,8 @@ HELP = """commands
   interns [n]           best new internships        jobs [n]   best new jobs
   saved | applied       your tracked postings
   mark <id> saved|applied|hidden|new
-  oss [n]               open-source issues          projects [n]   open-source projects
+  oss [n]               open-source issues (recommended first)          projects [n]   open-source projects
+  freelance [n]         Freelancer.com projects that fit you (read-only)
   repos                 latest checks of your repos
   queue                 actions waiting for approval
   approve <id> <2fa>    approve an action (needs a fresh 2FA code)
@@ -110,13 +112,7 @@ def create_app(cfg: dict, store, gh) -> FastAPI:
 
     def totp_fresh(code: str) -> bool:
         """Valid 2FA code that hasn't been used before (blocks replay)."""
-        if not verify_totp(totp_secret, code):
-            return False
-        last = store.kv_get("totp:last", "")
-        if last and last.split(":")[0] == code and time.time() - float(last.split(":")[1]) < 120:
-            return False
-        store.kv_set("totp:last", f"{code}:{time.time()}")
-        return True
+        return _totp_fresh(store, totp_secret, code)
 
     def page(title: str, body: str, meta: str = "", status: int = 200) -> HTMLResponse:
         return HTMLResponse(
@@ -294,9 +290,22 @@ def create_app(cfg: dict, store, gh) -> FastAPI:
             return "usage: mark <id> saved|applied|hidden|new"
 
         if cmd == "oss":
-            rows = store.q("SELECT * FROM scout_issues ORDER BY score DESC, last_seen DESC LIMIT ?", (n,))
-            return "\n".join(f"{r['score']:>3}  {r['repo']}#{r['number']} {r['title'][:70]}\n      {r['url']}"
-                             for r in rows) or "no issues yet"
+            rows = store.q("SELECT * FROM scout_issues ORDER BY CASE recommend WHEN 'yes' THEN 0 "
+                           "WHEN 'maybe' THEN 1 WHEN 'no' THEN 3 ELSE 2 END, score DESC, last_seen DESC "
+                           "LIMIT ?", (n,))
+            out = []
+            for r in rows:
+                tag = {"yes": "REC", "maybe": "MAYBE", "no": "SKIP"}.get(r["recommend"], "-")
+                info = (f"{tag:<5} {r['difficulty'] if r['difficulty'] is not None else '?':>3}/100 "
+                        f"{(r['kind'] or '?'):<8}" + (" GSoC" if r["gsoc"] else ""))
+                out.append(f"{r['score']:>3}  {info}  {r['repo']}#{r['number']} {r['title'][:60]}\n      {r['url']}")
+            return "\n".join(out) or "no issues yet"
+        if cmd == "freelance":
+            rows = store.q("SELECT * FROM freelance WHERE status='new' AND verdict!='blocked' "
+                           "ORDER BY score DESC, first_seen DESC LIMIT ?", (n,))
+            return "\n".join(f"{r['score']:>3}  [{r['id']}] {'CAUTION ' if r['verdict'] == 'caution' else ''}"
+                             f"{r['title'][:60]} ({r['bids']} bids)\n      {r['url']}" for r in rows) \
+                or "no freelance projects yet (needs FREELANCER_OAUTH_TOKEN in .env)"
         if cmd == "projects":
             rows = store.q("SELECT * FROM oss_projects ORDER BY score DESC, last_seen DESC LIMIT ?", (n,))
             return "\n".join(f"{r['score']:>3}  {r['full_name']} \u2605{r['stars']} {r['description'][:60]}\n"

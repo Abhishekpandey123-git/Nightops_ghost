@@ -190,6 +190,7 @@ cp systemd/nightops@.service systemd/nightops-web.service systemd/nightops-*.tim
 systemctl daemon-reload
 systemctl enable --now nightops-web.service
 systemctl enable --now nightops-bot.service   # optional: Telegram menu (see 8)
+systemctl enable --now nightops-freelance.timer   # optional: Freelancer.com search (see 8)
 systemctl enable --now nightops-jobs.timer nightops-scout.timer nightops-worker.timer nightops-brief.timer nightops-ai.timer nightops-automations.timer
 systemctl status nightops-web --no-pager
 systemctl list-timers 'nightops*'
@@ -204,6 +205,7 @@ systemctl list-timers 'nightops*'
 | brief | 07:00 IST |
 | ai (resumes paused AI tasks) | every 10 minutes |
 | automations (your own scripts) | checks every 5 minutes |
+| freelance (Freelancer.com search) | every 3 hours, only if the token is set |
 
 Logs: `journalctl -u nightops-web -n 50` and `journalctl -u 'nightops@*' -n 50`
 
@@ -315,6 +317,48 @@ never filtered. Defaults live under `notify: telegram: filters:` in config.yaml.
 
 Only one program may read the bot's messages: don't open the `getUpdates` link
 in a browser while the bot is running.
+
+### Freelancer.com projects (read-only)
+
+nightops can search **active Freelancer.com projects** that fit your skills,
+through Freelancer.com's official API with your own token. It only reads:
+it never places a bid, sends a message or changes anything on your account.
+
+1. Log in to Freelancer.com, open `accounts.freelancer.com/settings/develop`
+   and click **Generate Token**. Don't use "Create New Application" (that is
+   for apps other people use, and takes days to approve).
+2. Put the token in the server's `.env` (never in a chat or in config.yaml):
+   `FREELANCER_OAUTH_TOKEN=...`, then `chmod 600 .env`.
+3. Test once: `sudo -u nightops venv/bin/python nightops.py run freelance`
+4. Turn on the timer: `systemctl enable --now nightops-freelance.timer`
+
+Every project is scored (skills, competition, budget, age, whether the client's
+payment is verified) and checked for **scam signs**: fees to "register",
+payment up front, renting your account, KYC jobs, crypto payment, moving the
+chat to WhatsApp/Telegram, shortened links. Severe ones are hidden; milder ones
+are shown with a warning. Strong matches are sent to Telegram with buttons
+**Draft bid / Save / Hide**. On the Home screen tap **🤝 Freelance** to see the list.
+
+**Draft bid** writes a proposal from facts you give it, with AI if it is on,
+or a plain template if not. It is told never to invent experience, numbers,
+clients or reviews. You read it, fix it, and bid on Freelancer.com yourself.
+Optional settings in config.yaml (defaults shown are used if you leave it out):
+
+```yaml
+freelance:
+  queries: [python, fastapi, flask, django, chatbot, "ai agent", rag, "telegram bot", automation]
+  skills: [python, fastapi, flask, django, api, ai, chatbot, rag, automation, pdf, react]
+  min_budget_usd: 20
+  alarm_score: 45                # Telegram alert at/above this score
+  min_interval_hours: 3
+  profile: >-                    # true facts only: used in proposal drafts
+    B.Tech CSE student. I build Python backends (FastAPI, Flask), AI chatbots
+    with RAG, and Linux deployments with nginx and systemd.
+  links: ["https://github.com/Abhishekpandey123-git"]
+```
+
+If the token stops working (expired or revoked), you get one warning a day
+telling you to generate a new one.
 
 ### AI (Gemini, Groq, and open-source models)
 

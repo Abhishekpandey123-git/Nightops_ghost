@@ -331,7 +331,7 @@ class Home(Base):
         self.bot.handle(msg("\U0001F3E0 Home"))
         t = self.last_text()
         for part in ("updated", "Open source: 1 recommended (+1 today)", "GSoC 1", "a/b#1",
-                     "Jobs: 1 new", "Internships: 1 new", "Freelance / contract: 1", "Approvals waiting: 0"):
+                     "Jobs: 1 new", "Internships: 1 new", "Freelance: 1 contract jobs", "Approvals waiting: 0"):
             self.assertIn(part, t)
         datas = [b["callback_data"] for row in self.api.sent()[-1]["reply_markup"]["inline_keyboard"] for b in row]
         self.assertIn("v:gsoc", datas); self.assertIn("v:free", datas)

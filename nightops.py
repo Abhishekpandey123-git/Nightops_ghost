@@ -25,12 +25,12 @@ from core.github import GitHub
 from core.security import hash_password, new_totp_secret, otpauth_uri
 from core.store import Store
 from core.util import log, run_lock, today
-from modules import actions, aiq, automations, briefing, jobs, scout, worker
+from modules import actions, aiq, automations, briefing, freelancer, jobs, scout, worker
 
 MODULES = {"jobs": jobs.run, "scout": scout.run, "worker": worker.run, "brief": briefing.run,
-           "ai": aiq.run, "automations": automations.run}
+           "ai": aiq.run, "automations": automations.run, "freelance": freelancer.run}
 CFG_KEY = {"jobs": "jobs", "scout": "scout", "worker": "worker", "brief": "briefing", "ai": "ai",
-           "automations": "automations"}
+           "automations": "automations", "freelance": "freelance"}
 
 
 def build(cfg: dict):
@@ -60,6 +60,13 @@ def cmd_run(cfg: dict, name: str) -> int:
     events.push_pending(cfg, store)
     store.close()
     return code
+
+
+def cmd_bot(cfg: dict) -> int:
+    from modules import telegram_bot
+    store, gh, ai = build(cfg)
+    telegram_bot.run(cfg, store, gh, ai)
+    return 0
 
 
 def cmd_web(cfg: dict) -> int:
@@ -293,10 +300,25 @@ def cmd_doctor(cfg: dict) -> int:
         print("  [--] AI disabled (fine: everything non-AI still works)")
     srcs = [k for k, v in (cfg.get("jobs", {}).get("sources") or {}).items() if v and v.get("enabled", True)]
     print(f"  [--] job sources: {', '.join(srcs) or 'none'}")
+    fc = freelancer.settings(cfg)
+    if os.environ.get(fc["token_env"]):
+        print("  [ok] Freelancer.com token present (read-only search; bids are never sent)")
+    else:
+        print(f"  [--] Freelancer.com not connected (optional: add {fc['token_env']} to .env)")
     mine = config_mod.own_repos(cfg)
     for rc in cfg.get("worker", {}).get("repos") or []:
         check(f"worker repo {rc['repo']} listed in own_repos", rc["repo"].lower() in mine,
               "add it to github.own_repos")
+    from core.telegram import allowed_chats, allowed_users
+    if "telegram" in (cfg.get("notify", {}).get("channels") or []) or os.environ.get("TELEGRAM_BOT_TOKEN"):
+        check("Telegram bot token present", bool(os.environ.get("TELEGRAM_BOT_TOKEN")), "set TELEGRAM_BOT_TOKEN in .env")
+        chats = allowed_chats()
+        check("Telegram allowed chats set", bool(chats), "set TELEGRAM_CHAT_ID in .env")
+        if chats:
+            print(f"  [--] Telegram: {len(chats)} allowed chat(s), {len(allowed_users())} allowed user(s);"
+                  " everyone else is ignored")
+        if os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "").strip() and not os.environ.get("TELEGRAM_CHAT_ID"):
+            print("  [--] TELEGRAM_CHAT_ID is empty: alerts go to TELEGRAM_ALLOWED_CHAT_IDS only")
     chans = cfg.get("notify", {}).get("channels") or []
     print(f"  [--] push channels: {', '.join(chans) if chans else 'none (web console only)'}")
     return 0 if ok else 1
@@ -313,13 +335,15 @@ def main() -> int:
     au.add_argument("name", nargs="?")
     ax = sp.add_parser("automation-exec"); ax.add_argument("name")
     am = sp.add_parser("ai-models"); am.add_argument("provider")
-    for name in ("web", "set-password", "setup-2fa", "status", "doctor", "notify-test", "ai-test"):
+    for name in ("web", "set-password", "setup-2fa", "status", "doctor", "notify-test", "ai-test", "bot"):
         sp.add_parser(name)
     args = ap.parse_args()
 
     cfg = config_mod.load(args.config)
     if args.cmd == "run":
         return cmd_run(cfg, args.module)
+    if args.cmd == "bot":
+        return cmd_bot(cfg)
     if args.cmd == "web":
         return cmd_web(cfg)
     if args.cmd == "set-password":

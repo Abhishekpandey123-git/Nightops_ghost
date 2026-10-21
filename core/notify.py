@@ -12,10 +12,13 @@ from .config import env
 from .util import log, register_secret
 
 
-def send(cfg: dict, subject: str, text: str, html: str | None = None) -> list[str]:
+def send(cfg: dict, subject: str, text: str, html: str | None = None,
+         only: list[str] | None = None) -> list[str]:
     n = cfg.get("notify", {}) or {}
     results = []
     for ch in n.get("channels") or []:
+        if only is not None and ch not in only:
+            continue
         try:
             if ch == "telegram":
                 results.append(_telegram(n.get("telegram", {}), f"{subject}\n\n{text}"))
@@ -28,16 +31,19 @@ def send(cfg: dict, subject: str, text: str, html: str | None = None) -> list[st
 
 
 def _telegram(c: dict, text: str) -> str:
+    """Send to every allowed chat (TELEGRAM_CHAT_ID + TELEGRAM_ALLOWED_CHAT_IDS)."""
+    from .telegram import allowed_chats
     token = env(c.get("bot_token_env", "TELEGRAM_BOT_TOKEN"))
-    chat = env(c.get("chat_id_env", "TELEGRAM_CHAT_ID"))
-    if not token or not chat:
+    chats = allowed_chats()
+    if not token or not chats:
         return "telegram: not configured"
     register_secret(token)
     if len(text) > 3900:
         text = text[:3850] + "\n\n[... truncated, full report on server ...]"
-    r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", timeout=20,
-                      data={"chat_id": chat, "text": text, "disable_web_page_preview": "true"})
-    r.raise_for_status()
+    for chat in chats:
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", timeout=20,
+                          data={"chat_id": chat, "text": text, "disable_web_page_preview": "true"})
+        r.raise_for_status()
     return "telegram: sent"
 
 

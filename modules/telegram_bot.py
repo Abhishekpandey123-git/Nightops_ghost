@@ -33,9 +33,9 @@ from core.events import audit, emit
 from core.security import totp_fresh
 from core.telegram import TelegramAPI, allowed_chats, is_allowed
 from core.util import log
-from modules import actions
+from modules import actions, freelancer
 
-RUNNABLE = ("jobs", "scout", "ai", "brief")          # no worker from the phone: least privilege
+RUNNABLE = ("jobs", "scout", "ai", "brief", "freelance")          # no worker from the phone: least privilege
 MAX_AGE = 300                                         # seconds; older messages are ignored
 RATE = 20                                             # commands per minute per chat
 PAGE = 5
@@ -75,15 +75,16 @@ Commands, if you prefer typing:
 /filters - choose which alerts reach your phone
 /quiet [hours] - pause alerts (default 8), /resume
 /brief - latest morning briefing
-/run jobs|scout|ai|brief - start a module now
+/bid <id> - draft a proposal for a freelance project (you send it)
+/run jobs|scout|ai|brief|freelance - start a module now
 /whoami - your chat and user id"""
 
 KIND_CODES = {"all": None, "code": "code", "docs": "docs", "tests": "tests", "build": "build/CI", "design": "design"}
 
 
 class Bot:
-    def __init__(self, cfg: dict, store, gh, api: TelegramAPI, clock=time.time):
-        self.cfg, self.store, self.gh, self.api, self.clock = cfg, store, gh, api, clock
+    def __init__(self, cfg: dict, store, gh, api: TelegramAPI, clock=time.time, ai=None):
+        self.cfg, self.store, self.gh, self.api, self.clock, self.ai = cfg, store, gh, api, clock, ai
         self.recent: dict[int, deque] = defaultdict(deque)
         self.warned_slow: dict[int, float] = {}
         self.stop = False
@@ -237,6 +238,13 @@ class Bot:
             return self.oss("m", 100, "all", "s", 0)
         if cmd == "projects":
             return self.projects(0)
+        if cmd in ("free", "freelance"):
+            return self.freelance(0)
+        if cmd == "bid":
+            if len(args) == 1 and re.fullmatch(r"f[0-9a-f]{9}", args[0]):
+                self.bid(chat_id, args[0])
+                return None, None, None
+            return "Usage: /bid <id>  (the id in [brackets] on a freelance project)", None, None
         if cmd == "queue":
             return self.queue()
         if cmd == "approve":
@@ -305,7 +313,13 @@ class Bot:
                               (kind, day)),
                           one("SELECT * FROM jobs WHERE kind=? AND status='new' ORDER BY score DESC, "
                               "first_seen DESC LIMIT 1", (kind,)))
-        free = cnt(f"SELECT COUNT(*) FROM jobs WHERE status='new' AND ({FREELANCE_SQL})")
+        free = cnt("SELECT COUNT(*) FROM freelance WHERE status='new' AND verdict!='blocked'")
+        free_new = cnt("SELECT COUNT(*) FROM freelance WHERE status='new' AND verdict!='blocked' "
+                       "AND first_seen>=?", (day,))
+        top_f = one("SELECT * FROM freelance WHERE status='new' AND verdict!='blocked' "
+                    "ORDER BY score DESC, first_seen DESC LIMIT 1")
+        contract = cnt(f"SELECT COUNT(*) FROM jobs WHERE status='new' AND ({FREELANCE_SQL})")
+        connected = bool(freelancer.token(freelancer.settings(self.cfg)))
         pending = cnt("SELECT COUNT(*) FROM actions WHERE status='pending'")
         alarms = cnt("SELECT COUNT(*) FROM events WHERE level='alarm' AND acked=0")
         tokens = cnt("SELECT COALESCE(SUM(tokens_in+tokens_out),0) FROM ai_usage WHERE day=date('now')")
@@ -322,7 +336,12 @@ class Bot:
             lines.append(f"{icon} {label}: {n} new (+{new} today)")
             if top:
                 lines.append(f"   best: {top['score']} · {top['title'][:45]} · {top['company'][:20]}")
-        lines.append(f"\U0001F91D Freelance / contract: {free}")
+        if connected:
+            lines.append(f"\U0001F91D Freelancer.com: {free} open (+{free_new} today) \u00b7 contract jobs {contract}")
+            if top_f:
+                lines.append(f"   best: {top_f['score']} \u00b7 {top_f['title'][:45]} \u00b7 {top_f['bids']} bids")
+        else:
+            lines.append(f"\U0001F91D Freelance: {contract} contract jobs \u00b7 Freelancer.com not connected")
         lines.append(f"✅ Approvals waiting: {pending}   \U0001F6A8 Alarms: {alarms}")
         lines.append(f"\U0001F916 AI tokens today: {tokens:,}")
         lines += ["", "Tap a button to open it here."]
@@ -369,17 +388,46 @@ class Bot:
 
     def freelance(self, page: int):
         page = max(0, page)
-        rows = self.store.q(f"SELECT * FROM jobs WHERE status='new' AND ({FREELANCE_SQL}) "
+        if not freelancer.token(freelancer.settings(self.cfg)):
+            rows = self.store.q(f"SELECT * FROM jobs WHERE status='new' AND ({FREELANCE_SQL}) "
+                                "ORDER BY score DESC LIMIT ?", (PAGE,))
+            text = ("\U0001F91D Freelance\nFreelancer.com isn't connected: add FREELANCER_OAUTH_TOKEN to "
+                    "the server's .env (see SETUP.md).\n\nContract roles from your job feeds:\n\n"
+                    + ("\n\n".join(f"[{r['id']}] {r['score']}  {r['title'][:80]}\n{r['url']}" for r in rows)
+                       or "none right now"))
+            return text, [HOME_ROW], None
+        rows = self.store.q("SELECT * FROM freelance WHERE status='new' AND verdict!='blocked' "
                             "ORDER BY score DESC, first_seen DESC LIMIT ? OFFSET ?", (PAGE + 1, page * PAGE))
-        head = ("\U0001F91D Freelance / contract work from your job feeds"
-                f" (page {page + 1})\n"
-                "Freelancer.com and Upwork search isn't built yet (planned for the next version).")
-        body = "\n\n".join(
-            f"[{r['id']}] {r['score']}  {r['title'][:80]}\n{r['company'][:40]} · {r['location'][:40]}\n{r['url']}"
-            for r in rows[:PAGE]) or "Nothing freelance or contract right now."
-        nav = ([("◀ Prev", f"v:free:{page - 1}")] if page else []) + \
-              ([("Next ▶", f"v:free:{page + 1}")] if len(rows) > PAGE else [])
-        return head + "\n\n" + body, ([nav] if nav else []) + [HOME_ROW], None
+        head = f"\U0001F91D Freelancer.com projects that fit you (page {page + 1})"
+        items = []
+        for r in rows[:PAGE]:
+            warn = "\u26A0\uFE0F " if r["verdict"] == "caution" else ""
+            items.append("\n".join(x for x in [
+                f"{warn}[{r['id']}] {r['score']}  {r['title'][:80]}",
+                f"{freelancer.budget_text(r)} \u00b7 {r['bids']} bids"
+                + (" \u00b7 client verified" if r["client_verified"] == 1 else ""),
+                f"careful: {r['flags'][:90]}" if r["flags"] else "",
+                r["url"]] if x))
+        body = "\n\n".join(items) or "Nothing yet. New projects are checked every 3 hours."
+        buttons = [[(f"\u270D\uFE0F Draft bid {r['id']}", f"fl:d:{r['id']}"),
+                    ("\U0001F648 Hide", f"fl:h:{r['id']}")] for r in rows[:PAGE]]
+        nav = ([("\u25C0 Prev", f"v:free:{page - 1}")] if page else []) + \
+              ([("Next \u25B6", f"v:free:{page + 1}")] if len(rows) > PAGE else [])
+        if nav:
+            buttons.append(nav)
+        note = "\n\nDrafts are never sent: you copy one and bid on Freelancer.com yourself."
+        return head + "\n\n" + body + note, buttons + [HOME_ROW], None
+
+    def bid(self, chat_id: int, fid: str) -> None:
+        r = self.store.one("SELECT * FROM freelance WHERE id=?", (fid,))
+        if not r:
+            self.api.send(chat_id, f"No freelance project {fid}.")
+            return
+        text, how = freelancer.draft_proposal(self.cfg, self.store, self.ai, fid)
+        head = (f"\u270D\uFE0F Draft proposal ({how}) for:\n{r['title'][:100]}\n"
+                "Check it, edit anything that isn't true for you, then paste it on Freelancer.com.\n"
+                "\u2014\u2014\u2014\n")
+        self.api.send(chat_id, head + text, buttons=[[("Open project \u2197", r["url"])], HOME_ROW])
 
     # ------------------------------------------------------------ views
     def status(self) -> str:
@@ -546,6 +594,18 @@ class Bot:
         if m := re.fullmatch(r"job:(\w{1,40}):(saved|applied|hidden)", data):
             self.store.x("UPDATE jobs SET status=? WHERE id=?", (m[2], m[1]))
             return self.api.answer(cq["id"], f"Marked {m[2]}")
+        if m := re.fullmatch(r"fl:([dsh]):(f[0-9a-f]{9})", data):
+            if m[1] == "d":
+                self.api.answer(cq["id"], "Drafting...")
+                audit(self.store, who, f"chat:{cid}", "freelance_draft", m[2])
+                return self.bid(cid, m[2])
+            status = "saved" if m[1] == "s" else "hidden"
+            self.store.x("UPDATE freelance SET status=? WHERE id=?", (status, m[2]))
+            self.api.answer(cq["id"], f"Marked {status}")
+            if m[1] == "h" and str(mid) == self.store.kv_get(f"tg:home:{cid}"):
+                text, buttons, _ = self.freelance(0)
+                self.api.edit(cid, mid, text, buttons)
+            return None
         if m := re.fullmatch(r"v:(home|oss|gsoc|jobs|interns|free|proj|queue|alarms|settings|quiet|resume)"
                              r"(?::(\d{1,3}))?", data):
             return self._view(cq, cid, mid, m[1], int(m[2] or 0), who)
@@ -631,4 +691,4 @@ def run(cfg: dict, store, gh=None, ai=None) -> None:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set in .env")
     if not allowed_chats():
         raise SystemExit("No allowed chats: set TELEGRAM_CHAT_ID (and optionally TELEGRAM_ALLOWED_CHAT_IDS) in .env")
-    Bot(cfg, store, gh, api).run_forever()
+    Bot(cfg, store, gh, api, ai=ai).run_forever()

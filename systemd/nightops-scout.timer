@@ -2,7 +2,8 @@
 Description=nightops open-source scout every 30 minutes
 
 [Timer]
-$OnBootSec=3min\nOnUnitActiveSec=30min
+OnBootSec=3min
+OnUnitActiveSec=30min
 Unit=nightops@scout.service
 Persistent=true
 

@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS sessions(
     csrf TEXT, ip TEXT);
 CREATE TABLE IF NOT EXISTS login_attempts(
     id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, at REAL, ok INT);
+CREATE TABLE IF NOT EXISTS freelance(
+    id TEXT PRIMARY KEY, source TEXT, ext_id TEXT, title TEXT, url TEXT, type TEXT,
+    budget_min REAL, budget_max REAL, currency TEXT, budget_usd REAL, bids INT, bid_avg REAL,
+    skills TEXT, description TEXT, submitted TEXT, client_verified INT,
+    score INT, reasons TEXT, flags TEXT, verdict TEXT, status TEXT DEFAULT 'new',
+    proposal TEXT, first_seen TEXT, last_seen TEXT);
 """
 
 
@@ -68,6 +74,18 @@ class Store:
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(ai_usage)")}
         if "provider" not in cols:
             self.db.execute("ALTER TABLE ai_usage ADD COLUMN provider TEXT")
+        # issue profile (fix type, difficulty, GSoC, recommendation) and alert state
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(scout_issues)")}
+        for col, typ in (("kind", "TEXT"), ("difficulty", "INT"), ("gsoc", "INT"),
+                         ("recommend", "TEXT"), ("profile", "TEXT"), ("alert", "TEXT")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE scout_issues ADD COLUMN {col} {typ}")
+        # multi-line message for Telegram/email, shown instead of the one-line title
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(events)")}
+        if "detail" not in cols:
+            self.db.execute("ALTER TABLE events ADD COLUMN detail TEXT")
+        if "meta" not in cols:            # structured facts used by the alert filters
+            self.db.execute("ALTER TABLE events ADD COLUMN meta TEXT")
 
     def q(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return self.db.execute(sql, params).fetchall()
