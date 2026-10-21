@@ -390,6 +390,11 @@ class Home(Base):
 
 
 class Polling(Base):
+    def test_stop_signal_exits_at_once(self):
+        from modules import telegram_bot
+        with self.assertRaises(SystemExit):
+            telegram_bot._exit_now(15, None)
+
     def test_long_poll_wait_is_sent_to_telegram(self):
         self.bot.poll_once()
         p = [p for m, p in self.api.calls if m == "getUpdates"][-1]

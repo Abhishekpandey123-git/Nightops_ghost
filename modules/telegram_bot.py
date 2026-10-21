@@ -82,6 +82,13 @@ Commands, if you prefer typing:
 KIND_CODES = {"all": None, "code": "code", "docs": "docs", "tests": "tests", "build": "build/CI", "design": "design"}
 
 
+def _exit_now(*_):
+    """systemd stop/restart: leave immediately instead of waiting for the
+    current long poll (up to a minute) or a retry pause. Safe: the update
+    offset is saved before each message is handled, so nothing runs twice."""
+    raise SystemExit(0)
+
+
 class Bot:
     PREFIX = "tg"              # where this bot keeps its state in the database
     LOG = "bot"
@@ -134,7 +141,7 @@ class Bot:
         return len(res)
 
     def run_forever(self) -> None:
-        signal.signal(signal.SIGTERM, lambda *a: setattr(self, "stop", True))
+        signal.signal(signal.SIGTERM, _exit_now)            # stop at once, even mid-request
         self.setup()
         self.skip_backlog()
         log(self.LOG, f"listening; {len(allowed_chats())} allowed chat(s)")

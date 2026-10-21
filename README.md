@@ -228,7 +228,7 @@ automations/           your own scripts (three examples included)
 web/                   console app + static JS/CSS
 systemd/               hardened service units and timers
 deploy/                optional nginx HTTPS config
-tests/                 187 offline tests
+tests/                 188 offline tests
 ```
 
 ## Testing
@@ -237,7 +237,7 @@ tests/                 187 offline tests
 python -m unittest discover -s tests -v
 ```
 
-187 offline tests (no token, network, or AI key). They cover every job
+188 offline tests (no token, network, or AI key). They cover every job
 parser, the filters and scoring, cross-source deduplication, polite source
 intervals, password hashing, the RFC 6238 2FA test vectors, and the console's
 security: login required, wrong password, wrong 2FA, 2FA replay, lockout,

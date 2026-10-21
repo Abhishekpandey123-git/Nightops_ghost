@@ -11,6 +11,7 @@ Environment=HOME=/opt/nightops/.home
 ExecStart=/opt/nightops/venv/bin/python /opt/nightops/nightops.py jobs-bot
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=15
 # --- hardening ---
 NoNewPrivileges=yes
 PrivateTmp=yes
