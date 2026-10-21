@@ -83,6 +83,9 @@ KIND_CODES = {"all": None, "code": "code", "docs": "docs", "tests": "tests", "bu
 
 
 class Bot:
+    PREFIX = "tg"              # where this bot keeps its state in the database
+    LOG = "bot"
+    COMMANDS = COMMANDS
     def __init__(self, cfg: dict, store, gh, api: TelegramAPI, clock=time.time, ai=None):
         self.cfg, self.store, self.gh, self.api, self.clock, self.ai = cfg, store, gh, api, clock, ai
         self.recent: dict[int, deque] = defaultdict(deque)
@@ -98,43 +101,43 @@ class Bot:
             try:
                 self.api.call(method, **params)
             except Exception as e:
-                log("bot", f"{method}: {e}")
-        cmds = [{"command": c, "description": d} for c, d in COMMANDS]
+                log(self.LOG, f"{method}: {e}")
+        cmds = [{"command": c, "description": d} for c, d in self.COMMANDS]
         for chat in sorted(allowed_chats()):
             try:
                 self.api.call("setMyCommands", commands=cmds, scope={"type": "chat", "chat_id": chat})
                 self.api.call("setChatMenuButton", chat_id=chat, menu_button={"type": "commands"})
             except Exception as e:
-                log("bot", f"menu for chat {chat}: {e}")
+                log(self.LOG, f"menu for chat {chat}: {e}")
 
     def skip_backlog(self) -> None:
-        if self.store.kv_get("tg:offset"):
+        if self.store.kv_get(f"{self.PREFIX}:offset"):
             return
         try:
             res = self.api.call("getUpdates", offset=-1, timeout=0).get("result") or []
             last = res[-1]["update_id"] if res else 0
-            self.store.kv_set("tg:offset", str(last + 1))
+            self.store.kv_set(f"{self.PREFIX}:offset", str(last + 1))
         except Exception as e:
-            log("bot", f"skip backlog: {e}")
+            log(self.LOG, f"skip backlog: {e}")
 
     # -------------------------------------------------------------- loop
     def poll_once(self, timeout: int = 50) -> int:
-        offset = int(self.store.kv_get("tg:offset") or 0)
+        offset = int(self.store.kv_get(f"{self.PREFIX}:offset") or 0)
         res = self.api.call("getUpdates", timeout=timeout, offset=offset or None,
                             allowed_updates=["message", "callback_query"]).get("result") or []
         for upd in res:
-            self.store.kv_set("tg:offset", str(upd["update_id"] + 1))   # never process twice
+            self.store.kv_set(f"{self.PREFIX}:offset", str(upd["update_id"] + 1))   # never process twice
             try:
                 self.handle(upd)
             except Exception as e:
-                log("bot", f"update {upd.get('update_id')} failed: {e}")
+                log(self.LOG, f"update {upd.get('update_id')} failed: {e}")
         return len(res)
 
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, lambda *a: setattr(self, "stop", True))
         self.setup()
         self.skip_backlog()
-        log("bot", f"listening; {len(allowed_chats())} allowed chat(s)")
+        log(self.LOG, f"listening; {len(allowed_chats())} allowed chat(s)")
         backoff = 5
         while not self.stop:
             try:
@@ -146,7 +149,7 @@ class Bot:
                 if not got and time.monotonic() - started < 1:
                     time.sleep(1)      # safety net: never hammer Telegram
             except Exception as e:
-                log("bot", f"polling error: {e}; retry in {backoff}s")
+                log(self.LOG, f"polling error: {e}; retry in {backoff}s")
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 300)
 
@@ -336,7 +339,9 @@ class Bot:
             lines.append(f"{icon} {label}: {n} new (+{new} today)")
             if top:
                 lines.append(f"   best: {top['score']} · {top['title'][:45]} · {top['company'][:20]}")
-        if connected:
+        if connected and os.environ.get("FREELANCE_BOT_TOKEN"):
+            lines.append(f"\U0001F91D Freelancer.com: {free} open (+{free_new} today): details in your freelance bot")
+        elif connected:
             lines.append(f"\U0001F91D Freelancer.com: {free} open (+{free_new} today) \u00b7 contract jobs {contract}")
             if top_f:
                 lines.append(f"   best: {top_f['score']} \u00b7 {top_f['title'][:45]} \u00b7 {top_f['bids']} bids")
@@ -359,13 +364,13 @@ class Bot:
 
     def show_home(self, chat_id: int) -> None:
         """Send a fresh Home screen at the bottom and remove the previous one."""
-        old = self.store.kv_get(f"tg:home:{chat_id}")
+        old = self.store.kv_get(f"{self.PREFIX}:home:{chat_id}")
         text, buttons = self.home()
         res = self.api.send(chat_id, text, buttons=buttons)
         mid = ((res or {}).get("result") or {}).get("message_id")
         if mid:
-            self.store.kv_set(f"tg:home:{chat_id}", str(mid))
-            self.store.kv_set(f"tg:view:{chat_id}", "home")
+            self.store.kv_set(f"{self.PREFIX}:home:{chat_id}", str(mid))
+            self.store.kv_set(f"{self.PREFIX}:view:{chat_id}", "home")
         if old and old != str(mid):
             try:
                 self.api.call("deleteMessage", chat_id=chat_id, message_id=int(old))
@@ -376,15 +381,15 @@ class Bot:
         """Edit each chat's Home screen in place (silently), if it is showing Home."""
         self.last_refresh = self.clock()
         for chat in sorted(allowed_chats()):
-            mid = self.store.kv_get(f"tg:home:{chat}")
-            if not mid or self.store.kv_get(f"tg:view:{chat}") != "home":
+            mid = self.store.kv_get(f"{self.PREFIX}:home:{chat}")
+            if not mid or self.store.kv_get(f"{self.PREFIX}:view:{chat}") != "home":
                 continue
             try:
                 text, buttons = self.home()
                 self.api.edit(chat, int(mid), text, buttons)
             except Exception as e:
-                log("bot", f"home refresh for chat {chat}: {e}")
-                self.store.kv_set(f"tg:home:{chat}", "")      # gone: next Home tap makes a new one
+                log(self.LOG, f"home refresh for chat {chat}: {e}")
+                self.store.kv_set(f"{self.PREFIX}:home:{chat}", "")      # gone: next Home tap makes a new one
 
     def freelance(self, page: int):
         page = max(0, page)
@@ -584,7 +589,9 @@ class Bot:
         if not self._rate_ok(cid):
             return self.api.answer(cq["id"], "Slow down")
         who = f"telegram:{user['id']}"
+        return self.on_button(cq, cid, mid, data, user, who)
 
+    def on_button(self, cq: dict, cid: int, mid, data: str, user: dict, who: str) -> None:
         if data == "ack:all":
             self.store.x("UPDATE events SET acked=1 WHERE acked=0")
             return self.api.answer(cq["id"], "All acknowledged")
@@ -602,7 +609,7 @@ class Bot:
             status = "saved" if m[1] == "s" else "hidden"
             self.store.x("UPDATE freelance SET status=? WHERE id=?", (status, m[2]))
             self.api.answer(cq["id"], f"Marked {status}")
-            if m[1] == "h" and str(mid) == self.store.kv_get(f"tg:home:{cid}"):
+            if m[1] == "h" and str(mid) == self.store.kv_get(f"{self.PREFIX}:home:{cid}"):
                 text, buttons, _ = self.freelance(0)
                 self.api.edit(cid, mid, text, buttons)
             return None
@@ -649,8 +656,8 @@ class Bot:
     def _set_view(self, cid: int, mid, view: str) -> None:
         """Remember what the Home message shows, so the auto-refresh only
         redraws it while it is on the Home screen (never under your finger)."""
-        if mid and str(mid) == self.store.kv_get(f"tg:home:{cid}"):
-            self.store.kv_set(f"tg:view:{cid}", view)
+        if mid and str(mid) == self.store.kv_get(f"{self.PREFIX}:home:{cid}"):
+            self.store.kv_set(f"{self.PREFIX}:view:{cid}", view)
 
     def _view(self, cq: dict, cid: int, mid, name: str, page: int, who: str, answered: bool = False) -> None:
         note = ""

@@ -86,6 +86,12 @@ class Store:
             self.db.execute("ALTER TABLE events ADD COLUMN detail TEXT")
         if "meta" not in cols:            # structured facts used by the alert filters
             self.db.execute("ALTER TABLE events ADD COLUMN meta TEXT")
+        # freelance: niches, client trust, open/closed, which alerts were sent
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(freelance)")}
+        for col, typ in (("niches", "TEXT"), ("trust", "INT"), ("trust_label", "TEXT"), ("trust_why", "TEXT"),
+                         ("live", "TEXT DEFAULT 'active'"), ("alerted", "TEXT DEFAULT ''")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE freelance ADD COLUMN {col} {typ}")
 
     def q(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return self.db.execute(sql, params).fetchall()

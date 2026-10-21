@@ -360,6 +360,47 @@ freelance:
 If the token stops working (expired or revoked), you get one warning a day
 telling you to generate a new one.
 
+### The freelance bot (a second Telegram bot, just for Freelancer.com)
+
+A separate bot so freelance work doesn't crowd your main bot. Same security:
+only your allowed chat ids get an answer, strangers are ignored, no open port.
+
+1. In Telegram, open **@BotFather**, send `/newbot`, pick a name (for example
+   "My Freelance Radar") and a username ending in `bot`. Copy the token.
+2. Put it in the server's `.env` (never in a chat): `FREELANCE_BOT_TOKEN=...`
+   It must be a different bot from `TELEGRAM_BOT_TOKEN`.
+3. Start it:
+   ```bash
+   sed 's#/opt/nightops#/var/www/FLCS_Packages/nightops#g' systemd/nightops-freelance-bot.service > /etc/systemd/system/nightops-freelance-bot.service
+   systemctl daemon-reload && systemctl enable --now nightops-freelance-bot.service
+   ```
+4. Open your new bot in Telegram and send `/start` (a bot can't message you
+   until you do).
+
+From then on all freelance alerts come from this bot, not the main one.
+
+| Screen | What it shows |
+|---|---|
+| 🎯 Best matches | projects in your niches, best fit first |
+| 🌱 Low bids | 5 bids or fewer so far (3/5/10, your choice) |
+| 🕰️ Overlooked | posted 24h+ ago and still 10 bids or fewer: they've slipped down Freelancer.com's list |
+| 🛡️ Trusted | clients with a trust score of 70+ |
+| 🚨 Scam watch | projects with scam signs or risky clients, and why |
+| ⭐ Saved | projects you saved |
+| ⚙️ Niches & alerts | switch niches (Python backend, AI & chatbots, bots & automation, web, PDF & documents, Linux & deploy) and alerts |
+
+**Client trust (0-100)** comes from what Freelancer.com shows about the client:
+payment verified, deposit made, ID/email/phone verified, account age, rating
+and number of reviews, how often they hired before; scam signs in the post
+lower it. 70+ trusted, 45+ ok, 25+ unproven, below that risky. It's a guide,
+not a guarantee.
+
+**Alerts** (each only once per project): a new strong match; an overlooked
+project (a reminder even if you saw it as new); and a **possible scam** when a
+project in your niche has scam signs or a risky client, with what to watch out
+for. Pause them with 🔕 Quiet 8h or `/quiet 8`. **🔍 Search now** runs a search
+straight away (at most every 10 minutes).
+
 ### AI (Gemini, Groq, and open-source models)
 
 Everything works without AI. With it on, you get a short "how well does this

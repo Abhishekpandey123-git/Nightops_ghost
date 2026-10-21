@@ -7,7 +7,9 @@ and held back while you have quiet mode on. Everything stays in the feed.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 
 from . import alert_filters, notify
 from .util import log, now_iso
@@ -53,14 +55,40 @@ def alert_buttons(row, meta: dict) -> list:
         jid = meta["id"]
         rows.append([("\u2B50 Save", f"job:{jid}:saved"), ("\u2705 Applied", f"job:{jid}:applied"),
                      ("\U0001F648 Hide", f"job:{jid}:hidden")])
-    if meta.get("cat") == "freelance" and meta.get("id"):
+    if str(meta.get("cat", "")).startswith("freelance") and meta.get("id"):
         fid = meta["id"]
         rows.append([("\u270D\uFE0F Draft bid", f"fl:d:{fid}"), ("\u2B50 Save", f"fl:s:{fid}"),
                      ("\U0001F648 Hide", f"fl:h:{fid}")])
     return rows
 
 
-def push_pending(cfg: dict, store, api=None) -> dict:
+FREELANCE_BOT_ENV = "FREELANCE_BOT_TOKEN"
+
+
+def _telegram(api, send: list, name: str, digest_buttons: list) -> int:
+    """Each alert as its own message with buttons, or one digest if many."""
+    from .telegram import allowed_chats
+    chats = allowed_chats()
+    try:
+        if not (api.configured and chats):
+            return 0
+        if len(send) <= MAX_SINGLE:
+            for r, meta in send:
+                for chat in chats:
+                    api.send(chat, _text(r), buttons=alert_buttons(r, meta))
+        else:
+            body = "\n\n\u2014\u2014\u2014\n\n".join(_text(r) for r, _ in send[:MAX_SINGLE])
+            more = len(send) - MAX_SINGLE
+            body = f"{name}: {len(send)} new alerts\n\n{body}\n\n+{more} more"
+            for chat in chats:
+                api.send(chat, body, buttons=[digest_buttons])
+        return len(send)
+    except Exception as e:
+        log("notify", f"telegram ({name}) failed: {e}")
+        return 0
+
+
+def push_pending(cfg: dict, store, api=None, fapi=None) -> dict:
     """Send new alerts that pass the filters. Returns counts (sent/filtered/muted)."""
     rows = store.q("SELECT * FROM events WHERE pushed=0 AND level IN ('alarm','warn') ORDER BY id LIMIT 50")
     stats = {"sent": 0, "filtered": 0, "muted": 0}
@@ -71,9 +99,18 @@ def push_pending(cfg: dict, store, api=None) -> dict:
 
     f = alert_filters.get(cfg, store)
     quiet = alert_filters.muted(store)
-    send = []
+    fb_on = bool(os.environ.get(FREELANCE_BOT_ENV)) and "telegram" in channels
+    fb_quiet = float(store.kv_get("fb:mute_until") or 0) > time.time()
+    send, fsend = [], []
     for r in rows:
         meta = _meta(r)
+        if fb_on and str(meta.get("cat", "")).startswith("freelance"):
+            if fb_quiet:                               # the freelance bot has its own quiet mode
+                stats["fb_muted"] = stats.get("fb_muted", 0) + 1
+                store.kv_set("fb:muted_count", str(int(store.kv_get("fb:muted_count") or 0) + 1))
+            else:
+                fsend.append((r, meta))                # its own settings already chose these
+            continue
         if r["level"] == "warn" and alert_filters.category(r, meta) not in ("approvals", "failures", "security"):
             continue                                   # other warnings: console only, as before
         ok, _ = alert_filters.passes(r, meta, f)
@@ -87,29 +124,17 @@ def push_pending(cfg: dict, store, api=None) -> dict:
     store.x(f"UPDATE events SET pushed=1 WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))
     if stats["muted"]:
         store.kv_set("tg:muted_count", str(int(store.kv_get("tg:muted_count") or 0) + stats["muted"]))
+    if fsend:
+        from .telegram import TelegramAPI
+        stats["sent"] += _telegram(fapi or TelegramAPI(os.environ.get(FREELANCE_BOT_ENV)), fsend,
+                                   "freelance radar", [("See best matches", "v:best"), ("\u2713 Ack all", "ack:all")])
     if not send:
         return stats
 
     if "telegram" in channels:
-        from .telegram import TelegramAPI, allowed_chats
-        api = api or TelegramAPI.from_env(cfg)
-        chats = allowed_chats()
-        try:
-            if api.configured and chats:
-                if len(send) <= MAX_SINGLE:
-                    for r, meta in send:
-                        for chat in chats:
-                            api.send(chat, _text(r), buttons=alert_buttons(r, meta))
-                else:
-                    body = "\n\n\u2014\u2014\u2014\n\n".join(_text(r) for r, _ in send[:MAX_SINGLE])
-                    more = len(send) - MAX_SINGLE
-                    body = f"nightops: {len(send)} new alerts\n\n{body}\n\n+{more} more: /alarms"
-                    for chat in chats:
-                        api.send(chat, body, buttons=[[("See all alarms", "menu:alarms"),
-                                                        ("\u2713 Ack all", "ack:all")]])
-                stats["sent"] = len(send)
-        except Exception as e:
-            log("notify", f"telegram failed: {e}")
+        from .telegram import TelegramAPI
+        stats["sent"] += _telegram(api or TelegramAPI.from_env(cfg), send, "nightops",
+                                   [("See all alarms", "menu:alarms"), ("\u2713 Ack all", "ack:all")])
     others = [c for c in channels if c != "telegram"]
     if others:
         body = "\n\n\u2014\u2014\u2014\n\n".join(_text(r) for r, _ in send)

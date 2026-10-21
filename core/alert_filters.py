@@ -122,6 +122,8 @@ def passes(ev: dict, meta: dict, f: dict) -> tuple[bool, str]:
         if f["oss_gsoc"] == "only" and not meta.get("gsoc"):
             return False, "GSoC only"
         return True, ""
+    if cat == "freelance_scam":
+        return (True, "") if f["freelance"] else (False, "freelance off")
     if cat in ("job", "internship", "freelance"):
         key = {"job": "jobs", "internship": "internships", "freelance": "freelance"}[cat]
         if not f[key]:

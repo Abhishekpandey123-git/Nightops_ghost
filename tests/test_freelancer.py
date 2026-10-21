@@ -38,9 +38,15 @@ def project(pid, title, desc, bids=5, budget=(250, 750), skills=("Python", "Fast
             "jobs": [{"name": s} for s in skills]}
 
 
-def reply(projects, verified=True):
-    return {"status": "success", "result": {"projects": projects,
-                                            "users": {"9": {"status": {"payment_verified": verified}}}}}
+RICH = {"status": {"payment_verified": True, "deposit_made": True, "email_verified": True},
+        "registration_date": time.time() - 800 * 86400,
+        "employer_reputation": {"entire_history": {"overall": 4.8, "reviews": 6, "complete": 5}}}
+NEWBIE = {"status": {"payment_verified": False}, "registration_date": time.time() - 2 * 86400}
+
+
+def reply(projects, verified=True, client=None):
+    owner = client if client is not None else (RICH if verified else {"status": {"payment_verified": False}})
+    return {"status": "success", "result": {"projects": projects, "users": {"9": owner}}}
 
 
 GOOD = project(1, "FastAPI backend for invoices",
@@ -169,11 +175,14 @@ class Running(Base):
         self.assertEqual(rows["1"]["verdict"], "ok")
         self.assertEqual(rows["2"]["verdict"], "blocked")          # kept so it isn't re-checked
         self.assertNotIn("5", rows)                               # simply not a fit: not stored
-        alarms = {json.loads(a["meta"])["id"]: a for a in self.store.q("SELECT * FROM events WHERE level='alarm'")}
-        self.assertEqual(set(alarms), {rows["1"]["id"], rows["3"]["id"]})     # never the scam
-        self.assertIn("FastAPI backend", alarms[rows["1"]["id"]]["detail"])
-        caution = alarms[rows["3"]["id"]]["detail"]
-        self.assertIn("caution", caution); self.assertIn("Careful:", caution)
+        kinds = {(json.loads(a["meta"])["id"], json.loads(a["meta"])["kind"]): a
+                 for a in self.store.q("SELECT * FROM events WHERE level='alarm'")}
+        self.assertEqual(set(kinds), {(rows["1"]["id"], "new"), (rows["3"]["id"], "scam"),
+                                      (rows["2"]["id"], "scam")})              # caution: one message, not two
+        self.assertIn("FastAPI backend", kinds[(rows["1"]["id"], "new")]["detail"])
+        scam = kinds[(rows["2"]["id"], "scam")]["detail"]
+        self.assertIn("POSSIBLE SCAM", scam); self.assertIn("Don't pay anything", scam)
+        self.assertEqual(json.loads(kinds[(rows["2"]["id"], "scam")]["meta"])["cat"], "freelance_scam")
 
     def test_falls_back_to_plain_search_on_400(self):
         def _get(url, params=None, timeout=None, headers=None):
@@ -189,6 +198,7 @@ class Running(Base):
         self.run_module([GOOD])
         self.assertEqual(self.store.one("SELECT COUNT(*) FROM freelance")[0], 1)
         self.assertEqual(self.store.one("SELECT COUNT(*) FROM events WHERE level='alarm'")[0], 1)
+        self.assertEqual(len([c for c in self.calls if "/projects/active/" in c[0]]), 20)   # 10 searches x 2 real runs
 
     def test_bad_token_warns_once(self):
         self.assertEqual(self.run_module([GOOD], code=401), {"error": "auth"})
@@ -265,16 +275,196 @@ class BotScreens(Base):
     def test_home_counts_and_not_connected(self):
         text, _ = self.bot.home()
         self.assertIn("Freelancer.com: 2 open", text)
+        os.environ["FREELANCE_BOT_TOKEN"] = "999:other-bot-token"
+        self.assertIn("details in your freelance bot", self.bot.home()[0])
+        os.environ.pop("FREELANCE_BOT_TOKEN")
         os.environ.pop("FREELANCER_OAUTH_TOKEN")
         self.assertIn("not connected", self.bot.home()[0])
         self.assertIn("isn't connected", self.bot.freelance(0)[0])
 
     def test_push_sends_freelance_alert_with_buttons(self):
         push_pending(self.cfg, self.store, api=self.api)
-        sent = [p for p in self.api.sent() if "FREELANCE" in p["text"]]
-        self.assertEqual(len(sent), 2)                                   # good + caution, not the scam
-        self.assertFalse([p for p in sent if "data entry" in p["text"]])
+        sent = [p for p in self.api.sent() if "NEW MATCH" in p["text"] or "SCAM" in p["text"]]
+        self.assertEqual(len(sent), 3)                                   # 1 match + 2 scam warnings
         self.assertIn("fl:d:", json.dumps(sent[0]["reply_markup"]))
+
+
+
+# ------------------------------------------------------- freelance radar
+from core.events import emit  # noqa: E402
+from modules.freelance_bot import FreelanceBot  # noqa: E402
+
+FB_TOKEN = "999:freelance-bot-token-not-real"
+OLD = project(7, "Python API integration", "Integrate a REST API in Python with Flask.", bids=3, age_h=40)
+CROWDED = project(8, "Django website fixes", "Fix bugs in a Django website.", bids=80, budget=(30, 50))
+
+
+class Trust(Base):
+    def test_trusted_client(self):
+        score, label, why = freelancer.client_trust(RICH, [], False)
+        self.assertEqual(label, "trusted"); self.assertGreaterEqual(score, 70)
+        self.assertIn("payment verified", why); self.assertTrue(any("6 reviews" in w for w in why))
+
+    def test_new_unverified_client_is_risky(self):
+        score, label, why = freelancer.client_trust(NEWBIE, [], False)
+        self.assertEqual(label, "risky"); self.assertIn("brand-new account", why)
+        self.assertIn("payment NOT verified", why)
+
+    def test_scam_signs_and_unknown(self):
+        self.assertEqual(freelancer.client_trust(RICH, [], True)[:2], (0, "risky"))
+        self.assertLess(freelancer.client_trust(RICH, ["contains an email address"], False)[0],
+                        freelancer.client_trust(RICH, [], False)[0])
+        self.assertEqual(freelancer.client_trust(None, [], False)[1], "unknown")
+
+    def test_niches(self):
+        p = freelancer.parse_projects(reply([GOOD]))[0]
+        self.assertIn("python", freelancer.niches_of(p)); self.assertIn("docs", freelancer.niches_of(p))
+        self.assertEqual(freelancer.niches_of(freelancer.parse_projects(reply([OFFTOPIC]))[0]), [])
+
+
+class Radar(Base):
+    def setUp(self):
+        super().setUp()
+        os.environ["FREELANCE_BOT_TOKEN"] = FB_TOKEN
+        from tests.test_telegram_bot import FakeAPI
+        self.api = FakeAPI()
+        self.bot = FreelanceBot(self.cfg, self.store, None, self.api)
+
+    def tearDown(self):
+        os.environ.pop("FREELANCE_BOT_TOKEN", None)
+        super().tearDown()
+
+    def ids(self):
+        return {r["ext_id"]: r["id"] for r in self.store.q("SELECT ext_id, id FROM freelance")}
+
+    def cb(self, data, user=ME):
+        return {"update_id": 2, "callback_query": {"id": "c", "data": data, "from": {"id": user},
+                                                   "message": {"message_id": self.home_id(),
+                                                               "chat": {"id": user, "type": "private"}}}}
+
+    def home_id(self):
+        return int(self.store.kv_get(f"fb:home:{ME}") or 9)
+
+    def text(self, update):
+        self.bot.handle(update)
+        return self.api.calls[-1][1].get("text", "")
+
+    def test_overlooked_low_bids_and_trusted(self):
+        self.run_module([GOOD, OLD, CROWDED])
+        ids = self.ids()
+        old_alert = self.store.one("SELECT * FROM events WHERE dedupe=?", (f"freelance:overlooked:{ids['7']}",))
+        self.assertIsNotNone(old_alert)                                   # old + 3 bids: overlooked
+        self.assertIn("still only 3 bids", old_alert["detail"])
+        text, _, _ = self.bot.listing("old", 0)
+        self.assertIn("Python API integration", text); self.assertNotIn("FastAPI backend", text)
+        low, _, _ = self.bot.listing("low", 0)
+        self.assertIn("FastAPI backend", low); self.assertNotIn("Django website", low)
+        trusted, _, _ = self.bot.listing("trusted", 0)
+        self.assertIn("client ", trusted); self.assertIn("trusted", trusted)
+
+    def test_refresh_updates_bids_and_closed_projects(self):
+        self.run_module([GOOD])
+        fid = self.ids()["1"]
+        later = dict(GOOD, bid_stats={"bid_count": 40, "bid_avg": 300}, status="closed")
+
+        def _get(url, params=None, timeout=None, headers=None):
+            if url.endswith("/projects/active/"):
+                return FakeResp(reply([]))
+            return FakeResp(reply([later]))
+        self.store.kv_set("freelance:last", "0")
+        freelancer.run(self.cfg, self.store, get=_get, sleep=lambda s: None)
+        row = self.store.one("SELECT bids, live FROM freelance WHERE id=?", (fid,))
+        self.assertEqual((row["bids"], row["live"]), (40, "closed"))
+        self.assertNotIn("FastAPI backend", self.bot.listing("best", 0)[0])     # closed: gone from lists
+
+    def test_niche_and_alert_settings(self):
+        f = freelancer.set_pref(self.cfg, self.store, "niche:python")
+        self.assertNotIn("python", f["niches"])
+        freelancer.set_pref(self.cfg, self.store, "alert_new")
+        self.run_module([GOOD])                                               # still in "docs" niche
+        self.assertEqual(self.store.one("SELECT COUNT(*) FROM events WHERE level='alarm'")[0], 0)
+        self.assertIn("new", self.store.one("SELECT alerted FROM freelance")["alerted"])  # remembered
+        for k in list(freelancer.NICHES):
+            if k in freelancer.prefs(self.cfg, self.store)["niches"]:
+                freelancer.set_pref(self.cfg, self.store, "niche:" + k)
+        self.assertIn("Nothing here", self.bot.listing("best", 0)[0])
+        freelancer.set_pref(self.cfg, self.store, "reset")
+        self.assertEqual(freelancer.prefs(self.cfg, self.store)["niches"], list(freelancer.NICHES))
+
+    def test_home_and_buttons(self):
+        self.run_module([GOOD, SCAM, OLD])
+        self.bot.handle(msg_update("/start"))
+        home = self.api.sent()[-1]
+        self.assertIn("Freelance radar", home["text"]); self.assertIn("Possible scams (7 days): 1", home["text"])
+        datas = [b["callback_data"] for row in home["reply_markup"]["inline_keyboard"] for b in row]
+        self.assertTrue({"v:best", "v:low", "v:old", "v:trusted", "v:scams", "v:settings"} <= set(datas))
+        self.assertTrue(all(len(d.encode()) <= 64 for d in datas))
+        self.bot.handle(self.cb("v:scams"))
+        e = self.api.sent("editMessageText")[-1]
+        self.assertIn("Python data entry", e["text"]); self.assertIn("asks you to pay a fee", e["text"])
+        self.assertNotIn("fl:d:", json.dumps(e["reply_markup"]))            # no "draft" on scams
+        self.bot.handle(self.cb("v:settings"))
+        self.bot.handle(self.cb("n:python"))
+        self.assertIn("✖️ \U0001F40D Python backend",
+                      json.dumps(self.api.sent("editMessageText")[-1]["reply_markup"], ensure_ascii=False))
+
+    def test_save_toggle_and_draft_warning(self):
+        self.run_module([GOOD])
+        self.store.x("UPDATE freelance SET trust_label='unproven', trust_why='no reviews yet'")
+        fid = self.ids()["1"]
+        self.bot.handle(self.cb(f"fl:s:{fid}"))
+        self.assertEqual(self.store.one("SELECT status FROM freelance")["status"], "saved")
+        self.bot.handle(self.cb(f"fl:s:{fid}"))
+        self.assertEqual(self.store.one("SELECT status FROM freelance")["status"], "new")
+        self.bot.handle(self.cb(f"fl:d:{fid}"))
+        self.assertIn("Careful with this client", self.api.sent()[-1]["text"])
+
+    def test_strangers_and_own_state(self):
+        n = len(self.api.calls)
+        self.bot.handle(msg_update("/home", chat=999))
+        self.bot.handle(self.cb("v:best", user=999))
+        self.assertFalse([m for m, _ in self.api.calls[n:] if m in ("sendMessage", "editMessageText",
+                                                                     "answerCallbackQuery")])
+        self.bot.handle(msg_update("/home"))
+        self.assertTrue(self.store.kv_get(f"fb:home:{ME}"))
+        self.assertFalse(self.store.kv_get(f"tg:home:{ME}"))               # never touches the main bot
+
+    def test_search_now_is_limited(self):
+        self.store.kv_set("freelance:last", str(time.time()))
+        self.assertIn("less than 10 minutes", self.bot.check(ME, "t"))
+        self.store.kv_set("freelance:last", "0")
+        with mock.patch("modules.freelance_bot.subprocess.Popen") as popen:
+            self.assertIn("Searching", self.bot.check(ME, "t"))
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(self.store.kv_get("freelance:force"), "1")
+
+    def test_alerts_go_to_the_freelance_bot(self):
+        from tests.test_telegram_bot import FakeAPI
+        main = FakeAPI()
+        self.run_module([GOOD])
+        emit(self.store, "alarm", "jobs", "JOB x", "https://e/j", "j1", meta={"cat": "job", "score": 50, "id": "j1"})
+        push_pending(self.cfg, self.store, api=main, fapi=self.api)
+        self.assertTrue([p for p in self.api.sent() if "NEW MATCH" in p["text"]])
+        self.assertFalse([p for p in main.sent() if "NEW MATCH" in p["text"]])
+        self.assertTrue([p for p in main.sent() if "JOB x" in p["text"]])
+
+    def test_freelance_quiet_holds_alerts(self):
+        self.bot.command("/quiet 2", ME, ME)
+        self.run_module([GOOD])
+        push_pending(self.cfg, self.store, fapi=self.api, api=self.api)
+        self.assertEqual(self.api.sent(), [])
+        self.assertIn("1 arrived while paused", self.bot.resume())
+
+    def test_refuses_the_main_bot_token(self):
+        from modules import freelance_bot
+        os.environ["FREELANCE_BOT_TOKEN"] = os.environ["TELEGRAM_BOT_TOKEN"]
+        with self.assertRaises(SystemExit):
+            freelance_bot.run(self.cfg, self.store)
+
+
+def msg_update(text, chat=ME):
+    return {"update_id": 1, "message": {"message_id": 7, "date": int(time.time()), "text": text,
+                                        "chat": {"id": chat, "type": "private"}, "from": {"id": chat}}}
 
 
 if __name__ == "__main__":

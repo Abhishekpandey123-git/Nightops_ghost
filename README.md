@@ -69,6 +69,11 @@ hides scams (fees, payment up front, account renting, off-platform contact) and
 alerts you to strong matches. "Draft bid" writes an honest proposal you edit and
 send yourself: nightops never bids or messages anyone. See SETUP.md.
 
+Optionally a **second Telegram bot, just for freelance work**: best matches in
+your niches, low-bid and overlooked projects, a 0-100 trust score for each
+client (payment verified, reviews, account age...), a scam watch list, and
+alerts for new matches, overlooked projects and possible scams.
+
 ### Telegram bot
 
 A private bot on your phone with one **🏠 Home** button: a screen that shows
@@ -216,7 +221,7 @@ automations/           your own scripts (three examples included)
 web/                   console app + static JS/CSS
 systemd/               hardened service units and timers
 deploy/                optional nginx HTTPS config
-tests/                 162 offline tests
+tests/                 176 offline tests
 ```
 
 ## Testing
@@ -225,7 +230,7 @@ tests/                 162 offline tests
 python -m unittest discover -s tests -v
 ```
 
-162 offline tests (no token, network, or AI key). They cover every job
+176 offline tests (no token, network, or AI key). They cover every job
 parser, the filters and scoring, cross-source deduplication, polite source
 intervals, password hashing, the RFC 6238 2FA test vectors, and the console's
 security: login required, wrong password, wrong 2FA, 2FA replay, lockout,
