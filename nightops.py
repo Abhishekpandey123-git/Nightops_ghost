@@ -69,6 +69,13 @@ def cmd_freelance_bot(cfg: dict) -> int:
     return 0
 
 
+def cmd_jobs_bot(cfg: dict) -> int:
+    from modules import jobs_bot
+    store, gh, ai = build(cfg)
+    jobs_bot.run(cfg, store, gh, ai)
+    return 0
+
+
 def cmd_bot(cfg: dict) -> int:
     from modules import telegram_bot
     store, gh, ai = build(cfg)
@@ -312,10 +319,13 @@ def cmd_doctor(cfg: dict) -> int:
         print("  [ok] Freelancer.com token present (read-only search; bids are never sent)")
     else:
         print(f"  [--] Freelancer.com not connected (optional: add {fc['token_env']} to .env)")
-    if os.environ.get("FREELANCE_BOT_TOKEN"):
-        same = os.environ.get("FREELANCE_BOT_TOKEN") == os.environ.get("TELEGRAM_BOT_TOKEN")
-        check("freelance bot uses its own token", not same,
-              "FREELANCE_BOT_TOKEN must be a second bot from @BotFather, not the main bot's token")
+    toks = {k: os.environ.get(k) for k in ("TELEGRAM_BOT_TOKEN", "FREELANCE_BOT_TOKEN", "JOBS_BOT_TOKEN")
+            if os.environ.get(k)}
+    for k in ("FREELANCE_BOT_TOKEN", "JOBS_BOT_TOKEN"):
+        if k in toks:
+            same = [o for o, v in toks.items() if o != k and v == toks[k]]
+            check(f"{k} is its own bot", not same, f"{k} is the same bot as {', '.join(same)}: "
+                  "create a separate bot with @BotFather")
     mine = config_mod.own_repos(cfg)
     for rc in cfg.get("worker", {}).get("repos") or []:
         check(f"worker repo {rc['repo']} listed in own_repos", rc["repo"].lower() in mine,
@@ -346,7 +356,7 @@ def main() -> int:
     au.add_argument("name", nargs="?")
     ax = sp.add_parser("automation-exec"); ax.add_argument("name")
     am = sp.add_parser("ai-models"); am.add_argument("provider")
-    for name in ("web", "set-password", "setup-2fa", "status", "doctor", "notify-test", "ai-test", "bot", "freelance-bot"):
+    for name in ("web", "set-password", "setup-2fa", "status", "doctor", "notify-test", "ai-test", "bot", "freelance-bot", "jobs-bot"):
         sp.add_parser(name)
     args = ap.parse_args()
 
@@ -357,6 +367,8 @@ def main() -> int:
         return cmd_bot(cfg)
     if args.cmd == "freelance-bot":
         return cmd_freelance_bot(cfg)
+    if args.cmd == "jobs-bot":
+        return cmd_jobs_bot(cfg)
     if args.cmd == "web":
         return cmd_web(cfg)
     if args.cmd == "set-password":

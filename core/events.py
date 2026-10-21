@@ -63,6 +63,7 @@ def alert_buttons(row, meta: dict) -> list:
 
 
 FREELANCE_BOT_ENV = "FREELANCE_BOT_TOKEN"
+JOBS_BOT_ENV = "JOBS_BOT_TOKEN"
 
 
 def _telegram(api, send: list, name: str, digest_buttons: list) -> int:
@@ -88,7 +89,21 @@ def _telegram(api, send: list, name: str, digest_buttons: list) -> int:
         return 0
 
 
-def push_pending(cfg: dict, store, api=None, fapi=None) -> dict:
+def _side_bots() -> list[dict]:
+    """Separate bots that take over some alerts when their token is set."""
+    return [
+        {"env": FREELANCE_BOT_ENV, "prefix": "fb", "name": "freelance radar", "send": [],
+         "match": lambda cat: cat.startswith("freelance"),
+         "passes": lambda store, meta: True,                     # chosen by its settings already
+         "digest": [("See best matches", "v:best"), ("\u2713 Ack all", "ack:all")]},
+        {"env": JOBS_BOT_ENV, "prefix": "jb", "name": "jobs", "send": [],
+         "match": lambda cat: cat in ("job", "internship"),
+         "passes": lambda store, meta: alert_filters.jobs_passes(store, meta),
+         "digest": [("See jobs", "v:jobs"), ("\u2713 Ack all", "ack:all")]},
+    ]
+
+
+def push_pending(cfg: dict, store, api=None, fapi=None, japi=None) -> dict:
     """Send new alerts that pass the filters. Returns counts (sent/filtered/muted)."""
     rows = store.q("SELECT * FROM events WHERE pushed=0 AND level IN ('alarm','warn') ORDER BY id LIMIT 50")
     stats = {"sent": 0, "filtered": 0, "muted": 0}
@@ -99,17 +114,20 @@ def push_pending(cfg: dict, store, api=None, fapi=None) -> dict:
 
     f = alert_filters.get(cfg, store)
     quiet = alert_filters.muted(store)
-    fb_on = bool(os.environ.get(FREELANCE_BOT_ENV)) and "telegram" in channels
-    fb_quiet = float(store.kv_get("fb:mute_until") or 0) > time.time()
-    send, fsend = [], []
+    side = [b for b in _side_bots() if os.environ.get(b["env"])] if "telegram" in channels else []
+    send = []
     for r in rows:
         meta = _meta(r)
-        if fb_on and str(meta.get("cat", "")).startswith("freelance"):
-            if fb_quiet:                               # the freelance bot has its own quiet mode
-                stats["fb_muted"] = stats.get("fb_muted", 0) + 1
-                store.kv_set("fb:muted_count", str(int(store.kv_get("fb:muted_count") or 0) + 1))
+        bot = next((b for b in side if b["match"](str(meta.get("cat", "")))), None)
+        if bot:                                        # goes to its own bot, with its own settings
+            if float(store.kv_get(f"{bot['prefix']}:mute_until") or 0) > time.time():
+                stats[f"{bot['prefix']}_muted"] = stats.get(f"{bot['prefix']}_muted", 0) + 1
+                key = f"{bot['prefix']}:muted_count"
+                store.kv_set(key, str(int(store.kv_get(key) or 0) + 1))
+            elif bot["passes"](store, meta):
+                bot["send"].append((r, meta))
             else:
-                fsend.append((r, meta))                # its own settings already chose these
+                stats["filtered"] += 1
             continue
         if r["level"] == "warn" and alert_filters.category(r, meta) not in ("approvals", "failures", "security"):
             continue                                   # other warnings: console only, as before
@@ -124,10 +142,12 @@ def push_pending(cfg: dict, store, api=None, fapi=None) -> dict:
     store.x(f"UPDATE events SET pushed=1 WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))
     if stats["muted"]:
         store.kv_set("tg:muted_count", str(int(store.kv_get("tg:muted_count") or 0) + stats["muted"]))
-    if fsend:
-        from .telegram import TelegramAPI
-        stats["sent"] += _telegram(fapi or TelegramAPI(os.environ.get(FREELANCE_BOT_ENV)), fsend,
-                                   "freelance radar", [("See best matches", "v:best"), ("\u2713 Ack all", "ack:all")])
+    for bot in side:
+        if bot["send"]:
+            from .telegram import TelegramAPI
+            given = {"fb": fapi, "jb": japi}.get(bot["prefix"])
+            stats["sent"] += _telegram(given or TelegramAPI(os.environ.get(bot["env"])), bot["send"],
+                                       bot["name"], bot["digest"])
     if not send:
         return stats
 

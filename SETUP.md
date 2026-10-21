@@ -360,6 +360,37 @@ freelance:
 If the token stops working (expired or revoked), you get one warning a day
 telling you to generate a new one.
 
+### Three bots: nightops, freelance, jobs (optional)
+
+You can split alerts over three Telegram bots, so each stays simple:
+
+| Bot | Token in .env | What it does |
+|---|---|---|
+| nightops (main) | `TELEGRAM_BOT_TOKEN` | open-source issues and projects, GSoC, repo approvals, failures, security |
+| freelance radar | `FREELANCE_BOT_TOKEN` | Freelancer.com projects (below) |
+| jobs | `JOBS_BOT_TOKEN` | jobs and internships (below) |
+
+Each extra bot is optional. Without its token, its alerts stay in the main bot
+as before. All three answer only your allowed chat ids. Create each one with
+@BotFather (`/newbot`); every bot needs its own token, and you must send
+`/start` to each new bot once so it can message you.
+
+### The jobs bot (a third Telegram bot, just for jobs and internships)
+
+1. @BotFather -> `/newbot` -> copy the token -> `.env`: `JOBS_BOT_TOKEN=...`
+2. Start it:
+   ```bash
+   sed 's#/opt/nightops#/var/www/FLCS_Packages/nightops#g' systemd/nightops-jobs-bot.service > /etc/systemd/system/nightops-jobs-bot.service
+   systemctl daemon-reload && systemctl enable --now nightops-jobs-bot.service
+   ```
+3. Send `/start` to the new bot.
+
+Home shows new jobs and internships (with the best of each), saved and applied.
+Screens: 💼 Jobs, 🎓 Internships, ⭐ Saved, ✅ Applied; every posting has
+Save / Applied / Hide. 📍 Where switches anywhere / India / remote. ⚙️ Settings:
+job alerts on/off, internship alerts on/off, minimum score. 🔍 Check now runs
+the sources that are due (each is asked at most every few hours, as they request).
+
 ### The freelance bot (a second Telegram bot, just for Freelancer.com)
 
 A separate bot so freelance work doesn't crowd your main bot. Same security:

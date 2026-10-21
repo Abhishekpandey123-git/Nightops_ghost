@@ -334,12 +334,19 @@ class Bot:
         if top_i:
             d = top_i["difficulty"] if top_i["difficulty"] is not None else "?"
             lines.append(f"   newest: {top_i['repo']}#{top_i['number']} · {d}/100 · {top_i['kind'] or '?'}")
+        jobs_bot = bool(os.environ.get("JOBS_BOT_TOKEN"))
+        free_bot = bool(os.environ.get("FREELANCE_BOT_TOKEN"))
+        if jobs_bot:
+            lines.append(f"\U0001F4BC Jobs {jobs['job'][0]} \u00b7 \U0001F393 Internships {jobs['internship'][0]} new: "
+                         "details in your jobs bot")
         for kind, icon, label in (("job", "\U0001F4BC", "Jobs"), ("internship", "\U0001F393", "Internships")):
+            if jobs_bot:
+                break
             n, new, top = jobs[kind]
             lines.append(f"{icon} {label}: {n} new (+{new} today)")
             if top:
                 lines.append(f"   best: {top['score']} · {top['title'][:45]} · {top['company'][:20]}")
-        if connected and os.environ.get("FREELANCE_BOT_TOKEN"):
+        if connected and free_bot:
             lines.append(f"\U0001F91D Freelancer.com: {free} open (+{free_new} today): details in your freelance bot")
         elif connected:
             lines.append(f"\U0001F91D Freelancer.com: {free} open (+{free_new} today) \u00b7 contract jobs {contract}")
@@ -353,8 +360,8 @@ class Bot:
 
         buttons = [
             [("\U0001F9E9 Open source", "v:oss"), ("\U0001F31E GSoC", "v:gsoc")],
-            [("\U0001F4BC Jobs", "v:jobs"), ("\U0001F393 Internships", "v:interns")],
-            [("\U0001F91D Freelance", "v:free"), ("\U0001F4C1 Projects", "v:proj")],
+            *([] if jobs_bot else [[("\U0001F4BC Jobs", "v:jobs"), ("\U0001F393 Internships", "v:interns")]]),
+            ([] if free_bot else [("\U0001F91D Freelance", "v:free")]) + [("\U0001F4C1 Projects", "v:proj")],
             [(f"✅ Approvals ({pending})", "v:queue"), (f"\U0001F6A8 Alarms ({alarms})", "v:alarms")],
             [("⚙️ Alert settings", "v:settings"),
              ("\U0001F514 Resume alerts", "v:resume") if quiet else ("\U0001F515 Quiet 8h", "v:quiet")],

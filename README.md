@@ -74,6 +74,13 @@ your niches, low-bid and overlooked projects, a 0-100 trust score for each
 client (payment verified, reviews, account age...), a scam watch list, and
 alerts for new matches, overlooked projects and possible scams.
 
+### Three Telegram bots (optional split)
+
+**nightops** for open source, GSoC, approvals and system alerts; **freelance
+radar** for Freelancer.com; **jobs** for jobs and internships. Each extra bot
+takes over its own alerts once its token is in `.env`; without it, everything
+stays in the main bot. See SETUP.md.
+
 ### Telegram bot
 
 A private bot on your phone with one **🏠 Home** button: a screen that shows
@@ -221,7 +228,7 @@ automations/           your own scripts (three examples included)
 web/                   console app + static JS/CSS
 systemd/               hardened service units and timers
 deploy/                optional nginx HTTPS config
-tests/                 176 offline tests
+tests/                 187 offline tests
 ```
 
 ## Testing
@@ -230,7 +237,7 @@ tests/                 176 offline tests
 python -m unittest discover -s tests -v
 ```
 
-176 offline tests (no token, network, or AI key). They cover every job
+187 offline tests (no token, network, or AI key). They cover every job
 parser, the filters and scoring, cross-source deduplication, polite source
 intervals, password hashing, the RFC 6238 2FA test vectors, and the console's
 security: login required, wrong password, wrong 2FA, 2FA replay, lockout,

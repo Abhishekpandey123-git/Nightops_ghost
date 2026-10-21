@@ -336,8 +336,8 @@ def run(cfg: dict, store, gh=None, ai=None) -> None:
     tok = os.environ.get(TOKEN_ENV)
     if not tok:
         raise SystemExit(f"{TOKEN_ENV} is not set in .env (create a second bot with @BotFather)")
-    if tok == os.environ.get("TELEGRAM_BOT_TOKEN"):
-        raise SystemExit(f"{TOKEN_ENV} must be a different bot from TELEGRAM_BOT_TOKEN")
+    if tok in {os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("JOBS_BOT_TOKEN")}:
+        raise SystemExit(f"{TOKEN_ENV} must be its own bot, not the main or jobs bot's token")
     if not allowed_chats():
         raise SystemExit("No allowed chats: set TELEGRAM_CHAT_ID in .env")
     FreelanceBot(cfg, store, gh, TelegramAPI(tok), ai=ai).run_forever()

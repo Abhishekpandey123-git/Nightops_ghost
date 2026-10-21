@@ -166,3 +166,64 @@ def buttons(f: dict) -> list:
          (f"{on(f['other'])} Other", "f:other")],
         [("↺ Reset to defaults", "f:reset"), ("Done", "f:done")],
     ]
+
+
+# ------------------------------------------------- jobs bot preferences
+# Used when the separate jobs bot is set up (JOBS_BOT_TOKEN). Changed with its
+# Settings buttons; saved in the database.
+JOBS_PREFS = {"alert_jobs": True, "alert_interns": True, "min_score": 0, "where": "any"}
+JOBS_CYCLES = {"min_score": [0, 30, 40, 50, 60], "where": ["any", "india", "remote"]}
+
+
+def jobs_prefs(store) -> dict:
+    f = dict(JOBS_PREFS)
+    raw = store.kv_get("jb:prefs")
+    if raw:
+        try:
+            f.update(json.loads(raw))
+        except ValueError:
+            pass
+    return f
+
+
+def set_jobs_pref(store, key: str) -> dict:
+    f = jobs_prefs(store)
+    if key in ("alert_jobs", "alert_interns"):
+        f[key] = not f[key]
+    elif key in JOBS_CYCLES:
+        opts = JOBS_CYCLES[key]
+        f[key] = opts[(opts.index(f[key]) + 1) % len(opts)] if f[key] in opts else opts[0]
+    elif key == "reset":
+        store.kv_set("jb:prefs", "")
+        return jobs_prefs(store)
+    else:
+        return f
+    store.kv_set("jb:prefs", json.dumps(f))
+    return f
+
+
+def jobs_passes(store, meta: dict) -> bool:
+    """Should this job/internship alert go to the jobs bot?"""
+    f = jobs_prefs(store)
+    if not f["alert_interns" if meta.get("cat") == "internship" else "alert_jobs"]:
+        return False
+    if int(meta.get("score") or 0) < int(f["min_score"]):
+        return False
+    if f["where"] != "any" and meta.get("id"):
+        row = store.one("SELECT location, remote FROM jobs WHERE id=?", (meta["id"],))
+        if row and not where_ok(f["where"], row["location"], row["remote"]):
+            return False
+    return True
+
+
+INDIA = ("india", "delhi", "noida", "gurgaon", "gurugram", "ghaziabad", "bangalore", "bengaluru",
+         "hyderabad", "pune", "mumbai", "chennai", "kolkata", "dehradun")
+
+
+def where_ok(where: str, location: str | None, remote) -> bool:
+    loc = (location or "").lower()
+    if where == "india":
+        return any(c in loc for c in INDIA)
+    if where == "remote":
+        return bool(remote) or "remote" in loc
+    return True
